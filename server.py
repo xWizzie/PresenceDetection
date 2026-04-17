@@ -10,12 +10,14 @@ app = Flask(__name__)
 PRESENCE_TIMEOUT_SECONDS = 30
 EXPECTED_SENSORS = ("living-room-1", "living-room-2", "living-room-3")
 EVENT_HISTORY_LIMIT = 1000
+STATUS_HISTORY_LIMIT = 60
 RAW_DATA_DIR = Path("data/raw")
 RAW_SAMPLE_LOG = RAW_DATA_DIR / "sensor_samples.jsonl"
 
 sensor_state = {}
 last_pir_motion_time = {}
 sensor_events = []
+samples_by_sensor = {}
 lock = Lock()
 
 
@@ -82,8 +84,13 @@ def normalize_sensor_payload(data, source_endpoint):
         or ""
     ).strip()
 
+    has_pir = "pir" in data
+    has_motion = "motion" in data
+    has_wifi_rssi = "wifi_rssi" in data
+    has_legacy_rssi = "rssi" in data
+
     pir_value = data.get("pir")
-    if pir_value is None:
+    if not has_pir:
         pir_value = data.get("motion")
 
     pir = parse_binary_signal(pir_value)
@@ -100,6 +107,47 @@ def normalize_sensor_payload(data, source_endpoint):
         "uptime_ms": parse_optional_number(data.get("uptime_ms")),
         "timestamp_ms": parse_optional_number(data.get("timestamp_ms")),
         "source_endpoint": source_endpoint,
+        "has_pir_signal": has_pir or has_motion,
+        "has_wifi_rssi": has_wifi_rssi or has_legacy_rssi,
+    }
+
+
+def append_sample_to_memory(event):
+    sensor_events.append(event)
+    del sensor_events[:-EVENT_HISTORY_LIMIT]
+
+    sensor_samples = samples_by_sensor.setdefault(event["sensor"], [])
+    sensor_samples.append(event)
+    del sensor_samples[:-EVENT_HISTORY_LIMIT]
+
+
+def summarize_sensor_history(sensor):
+    samples = samples_by_sensor.get(sensor, [])
+    recent = samples[-STATUS_HISTORY_LIMIT:]
+    rssi_values = [
+        sample["wifi_rssi"]
+        for sample in recent
+        if sample.get("wifi_rssi") is not None
+    ]
+    pir_samples = [
+        sample
+        for sample in recent
+        if sample.get("pir") is not None
+    ]
+
+    return {
+        "stored_samples": len(samples),
+        "summary_window_samples": len(recent),
+        "pir_samples": len(pir_samples),
+        "pir_motion_samples": sum(1 for sample in pir_samples if sample["pir"]),
+        "wifi_rssi_samples": len(rssi_values),
+        "wifi_rssi_avg": (
+            round(sum(rssi_values) / len(rssi_values), 2)
+            if rssi_values
+            else None
+        ),
+        "wifi_rssi_min": min(rssi_values) if rssi_values else None,
+        "wifi_rssi_max": max(rssi_values) if rssi_values else None,
     }
 
 
@@ -113,6 +161,18 @@ def ingest_sensor_sample(data, source_endpoint):
 
     if not sensor:
         return {"ok": False, "error": "Missing sensor name"}, 400
+
+    if sample["has_pir_signal"] and pir is None:
+        return {
+            "ok": False,
+            "error": "pir/motion must be true/false, 1/0, or motion/clear",
+        }, 400
+
+    if sample["has_wifi_rssi"] and sample["wifi_rssi"] is None:
+        return {
+            "ok": False,
+            "error": "wifi_rssi/rssi must be a number",
+        }, 400
 
     if pir is None and sample["wifi_rssi"] is None:
         return {
@@ -140,16 +200,27 @@ def ingest_sensor_sample(data, source_endpoint):
     }
 
     with lock:
-        sensor_state[sensor] = {
-            "pir": pir,
-            "motion": pir,
+        previous_state = sensor_state.get(sensor, {})
+        next_state = {
+            "pir": previous_state.get("pir"),
+            "motion": previous_state.get("motion"),
             "uptime_ms": sample["uptime_ms"],
             "timestamp_ms": sample["timestamp_ms"],
-            "wifi_rssi": sample["wifi_rssi"],
-            "rssi": sample["wifi_rssi"],
+            "wifi_rssi": previous_state.get("wifi_rssi"),
+            "rssi": previous_state.get("rssi"),
             "ip": ip,
             "received_at": received_at,
         }
+
+        if pir is not None:
+            next_state["pir"] = pir
+            next_state["motion"] = pir
+
+        if sample["wifi_rssi"] is not None:
+            next_state["wifi_rssi"] = sample["wifi_rssi"]
+            next_state["rssi"] = sample["wifi_rssi"]
+
+        sensor_state[sensor] = next_state
 
         if pir:
             last_pir_motion_time[sensor] = now
@@ -158,8 +229,7 @@ def ingest_sensor_sample(data, source_endpoint):
         home_present = any(is_present(name) for name in sensor_state)
         event["present"] = present
 
-        sensor_events.append(event)
-        del sensor_events[:-EVENT_HISTORY_LIMIT]
+        append_sample_to_memory(event)
         append_raw_sample(event)
 
     print(
@@ -202,6 +272,7 @@ def build_sensor_status(sensor: str, now: datetime):
         "wifi_rssi": state.get("wifi_rssi") if state else None,
         "rssi": state.get("rssi") if state else None,
         "ip": state.get("ip") if state else None,
+        "history": summarize_sensor_history(sensor),
     }
 
 
@@ -218,6 +289,7 @@ def build_status_payload(now: datetime):
         "presence_timeout_seconds": PRESENCE_TIMEOUT_SECONDS,
         "server_time": format_timestamp(now),
         "sensors": sensors,
+        "sample_history_limit": EVENT_HISTORY_LIMIT,
     }
 
 
@@ -286,23 +358,48 @@ def status():
 
 @app.route("/events", methods=["GET"])
 def events():
+    payload, status_code = recent_samples_payload(response_key="events")
+    return jsonify(payload), status_code
+
+
+@app.route("/samples", methods=["GET"])
+def samples():
+    payload, status_code = recent_samples_payload(response_key="samples")
+    return jsonify(payload), status_code
+
+
+def recent_samples_payload(response_key):
     try:
         limit = int(request.args.get("limit", "300"))
     except ValueError:
-        limit = 300
+        return {"ok": False, "error": "limit must be an integer"}, 400
 
     limit = max(1, min(limit, EVENT_HISTORY_LIMIT))
+    sensor_filter = request.args.get("sensor")
 
     with lock:
-        events_slice = sensor_events[-limit:]
+        if sensor_filter:
+            matching_samples = samples_by_sensor.get(sensor_filter, [])
+        else:
+            matching_samples = sensor_events
+
+        samples_slice = matching_samples[-limit:]
         total_stored = len(sensor_events)
 
-    return jsonify({
+    payload = {
         "ok": True,
-        "events": events_slice,
+        response_key: samples_slice,
         "limit": limit,
+        "sensor": sensor_filter,
         "total_stored": total_stored,
-    }), 200
+    }
+
+    if response_key != "samples":
+        payload["samples"] = samples_slice
+    if response_key != "events":
+        payload["events"] = samples_slice
+
+    return payload, 200
 
 
 @app.route("/health", methods=["GET"])
@@ -319,6 +416,7 @@ def api_info():
             "dashboard": "/",
             "post_sensor": "/sensor",
             "legacy_post_pir": "/pir",
+            "samples": "/samples",
             "events": "/events",
             "status": "/status",
             "health": "/health",

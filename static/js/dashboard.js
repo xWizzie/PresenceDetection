@@ -17,6 +17,8 @@ const eventList = document.getElementById("eventList");
 const eventCount = document.getElementById("eventCount");
 const canvas = document.getElementById("motionChart");
 const ctx = canvas.getContext("2d");
+const rssiCanvas = document.getElementById("rssiChart");
+const rssiCtx = rssiCanvas.getContext("2d");
 
 function formatClock(timestamp) {
   if (!timestamp) {
@@ -55,6 +57,13 @@ function getPirValue(event) {
   return event.motion;
 }
 
+function getWifiRssi(event) {
+  if (event.wifi_rssi !== null && event.wifi_rssi !== undefined) {
+    return event.wifi_rssi;
+  }
+  return event.rssi;
+}
+
 async function getJSON(url) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -74,11 +83,11 @@ async function refresh() {
     const limit = appState.minutes * 60;
     const results = await Promise.all([
       getJSON("/status"),
-      getJSON("/events?limit=" + limit)
+      getJSON("/samples?limit=" + limit)
     ]);
 
     appState.status = results[0];
-    appState.events = results[1].events || [];
+    appState.events = results[1].samples || results[1].events || [];
     connectionState.textContent = "Live";
     connectionState.className = "pill present";
     render();
@@ -101,6 +110,7 @@ function render() {
   renderSensors();
   renderEvents();
   drawChart();
+  drawRssiChart();
 }
 
 function renderPresence() {
@@ -136,6 +146,10 @@ function renderSensors() {
     const wifiRssi = sensor.wifi_rssi === null || sensor.wifi_rssi === undefined
       ? "-"
       : sensor.wifi_rssi + " dBm";
+    const sampleCount = sensor.history ? sensor.history.stored_samples : 0;
+    const avgRssi = sensor.history && sensor.history.wifi_rssi_avg !== null
+      ? sensor.history.wifi_rssi_avg + " dBm"
+      : "-";
     return `
       <article class="sensor-card">
         <p class="sensor-name"><span class="dot ${dotClass}"></span>${name}</p>
@@ -143,28 +157,34 @@ function renderSensors() {
         <div class="sensor-metric"><span>PIR</span><strong>${pir}</strong></div>
         <div class="sensor-metric"><span>Last motion</span><strong>${formatAge(sensor.seconds_since_last_motion)}</strong></div>
         <div class="sensor-metric"><span>Wi-Fi RSSI</span><strong>${wifiRssi}</strong></div>
+        <div class="sensor-metric"><span>Avg RSSI</span><strong>${avgRssi}</strong></div>
+        <div class="sensor-metric"><span>Samples</span><strong>${sampleCount}</strong></div>
       </article>
     `;
   }).join("");
 }
 
 function renderEvents() {
-  const events = appState.events.slice(-12).reverse();
-  eventCount.textContent = appState.events.length + " stored";
+  const pirEvents = appState.events
+    .filter(event => getPirValue(event) !== null && getPirValue(event) !== undefined)
+    .slice(-12)
+    .reverse();
+  eventCount.textContent = pirEvents.length + " visible";
 
-  if (!events.length) {
-    eventList.innerHTML = '<div class="empty">Move in front of the PIR sensor to start the timeline.</div>';
+  if (!pirEvents.length) {
+    eventList.innerHTML = '<div class="empty">Send PIR samples to see motion and clear events here.</div>';
     return;
   }
 
-  eventList.innerHTML = events.map(event => {
+  eventList.innerHTML = pirEvents.map(event => {
     const pir = getPirValue(event);
     const state = pir === null || pir === undefined
       ? "RSSI sample"
       : pir ? "PIR motion" : "PIR clear";
-    const wifiRssi = event.wifi_rssi === null || event.wifi_rssi === undefined
+    const rssi = getWifiRssi(event);
+    const wifiRssi = rssi === null || rssi === undefined
       ? "-"
-      : event.wifi_rssi + " dBm";
+      : rssi + " dBm";
     return `
       <div class="event-row">
         <span class="event-time">${formatClock(event.timestamp)}</span>
@@ -251,6 +271,165 @@ function drawChart() {
   ctx.textAlign = "right";
   ctx.fillText("now", width - right, height - 15);
   ctx.textAlign = "left";
+}
+
+function drawRssiChart() {
+  const status = appState.status;
+  const samples = appState.events || [];
+  const sensors = status ? Object.keys(status.sensors || {}) : [];
+  const rect = rssiCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(320, Math.floor(rect.width));
+  const height = Math.max(300, Math.floor(rect.height));
+
+  rssiCanvas.width = Math.floor(width * dpr);
+  rssiCanvas.height = Math.floor(height * dpr);
+  rssiCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  rssiCtx.clearRect(0, 0, width, height);
+
+  rssiCtx.fillStyle = "#fbfcfc";
+  rssiCtx.fillRect(0, 0, width, height);
+
+  const left = width < 560 ? 54 : 72;
+  const right = 22;
+  const top = 28;
+  const bottom = 44;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const now = Date.now();
+  const start = now - appState.minutes * 60 * 1000;
+  const minRssi = -95;
+  const maxRssi = -30;
+  const groupedSamples = groupEventsBySensor(samples);
+
+  drawRssiGrid({
+    width,
+    height,
+    left,
+    right,
+    top,
+    bottom,
+    start,
+    now,
+    minRssi,
+    maxRssi
+  });
+
+  if (!sensors.length) {
+    rssiCtx.fillStyle = "#63736f";
+    rssiCtx.font = "700 16px Segoe UI, Arial, sans-serif";
+    rssiCtx.fillText("Waiting for RSSI samples", left, top + 34);
+    return;
+  }
+
+  sensors.forEach((sensor, index) => {
+    const color = colors[index % colors.length];
+    const points = (groupedSamples.get(sensor) || [])
+      .map(sample => ({
+        time: sample.time,
+        value: getWifiRssi(sample)
+      }))
+      .filter(point => (
+        point.value !== null
+        && point.value !== undefined
+        && point.time >= start
+        && point.time <= now
+      ))
+      .map(point => ({
+        x: left + ((point.time - start) / (now - start)) * chartWidth,
+        y: top + ((maxRssi - point.value) / (maxRssi - minRssi)) * chartHeight,
+        value: point.value
+      }));
+
+    drawRssiLine(points, color);
+
+    if (points.length) {
+      const last = points[points.length - 1];
+      rssiCtx.fillStyle = color;
+      rssiCtx.font = "700 12px Segoe UI, Arial, sans-serif";
+      rssiCtx.fillText(sensor + " " + last.value + " dBm", 12, top + 16 + index * 18);
+    }
+  });
+}
+
+function drawRssiGrid(options) {
+  const {
+    width,
+    height,
+    left,
+    right,
+    top,
+    bottom,
+    start,
+    now,
+    minRssi,
+    maxRssi
+  } = options;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const rssiLines = [-90, -80, -70, -60, -50, -40];
+  const timeLines = 6;
+
+  rssiCtx.strokeStyle = "#e5ece9";
+  rssiCtx.lineWidth = 1;
+  rssiCtx.fillStyle = "#63736f";
+  rssiCtx.font = "11px Segoe UI, Arial, sans-serif";
+
+  rssiLines.forEach(value => {
+    const y = top + ((maxRssi - value) / (maxRssi - minRssi)) * chartHeight;
+    rssiCtx.beginPath();
+    rssiCtx.moveTo(left, y);
+    rssiCtx.lineTo(width - right, y);
+    rssiCtx.stroke();
+    rssiCtx.fillText(value + " dBm", 8, y + 4);
+  });
+
+  for (let i = 0; i <= timeLines; i += 1) {
+    const x = left + (chartWidth / timeLines) * i;
+    rssiCtx.beginPath();
+    rssiCtx.moveTo(x, top);
+    rssiCtx.lineTo(x, height - bottom);
+    rssiCtx.stroke();
+
+    if (i > 0 && i < timeLines) {
+      const time = start + ((now - start) / timeLines) * i;
+      rssiCtx.fillText(formatClock(time), x - 26, height - 15);
+    }
+  }
+
+  rssiCtx.fillText(appState.minutes + " min ago", left, height - 15);
+  rssiCtx.textAlign = "right";
+  rssiCtx.fillText("now", width - right, height - 15);
+  rssiCtx.textAlign = "left";
+}
+
+function drawRssiLine(points, color) {
+  if (!points.length) {
+    return;
+  }
+
+  rssiCtx.strokeStyle = color;
+  rssiCtx.lineWidth = 2.5;
+  rssiCtx.lineCap = "round";
+  rssiCtx.lineJoin = "round";
+  rssiCtx.beginPath();
+
+  points.forEach((point, index) => {
+    if (index === 0) {
+      rssiCtx.moveTo(point.x, point.y);
+      return;
+    }
+    rssiCtx.lineTo(point.x, point.y);
+  });
+
+  rssiCtx.stroke();
+
+  points.forEach(point => {
+    rssiCtx.fillStyle = color;
+    rssiCtx.beginPath();
+    rssiCtx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+    rssiCtx.fill();
+  });
 }
 
 function groupEventsBySensor(events) {
@@ -428,7 +607,10 @@ document.getElementById("rangeButtons").addEventListener("click", event => {
 
 window.addEventListener("resize", () => {
   window.clearTimeout(appState.resizeTimer);
-  appState.resizeTimer = window.setTimeout(drawChart, 120);
+  appState.resizeTimer = window.setTimeout(() => {
+    drawChart();
+    drawRssiChart();
+  }, 120);
 });
 
 startPolling();

@@ -1,13 +1,24 @@
-# Presence Detection Sensor Server
+# Presence Detection Phase 1
 
-Small Flask server for receiving phase-1 presence sensing samples from ESP32 boards.
+Flask-based phase-1 data collection server for ESP32 presence sensing experiments.
 
-Phase 1 is:
+The goal is not final presence detection yet. Phase 1 collects clean time-series samples so a model can be built later for device-free presence detection from Wi-Fi disturbances. PIR is kept as a debugging and rough-labeling signal.
 
-- ESP32 boards send PIR state and Wi-Fi RSSI samples
-- The PC receives and stores raw samples
-- The dashboard shows live sensor state
-- No model training yet
+## What Phase 1 Does
+
+- Receives ESP32 sensor samples over HTTP
+- Tracks latest PIR and Wi-Fi RSSI values per sensor
+- Keeps recent samples in memory for the dashboard
+- Appends accepted samples to `data/raw/sensor_samples.jsonl`
+- Shows live PIR-derived presence and Wi-Fi RSSI trends
+
+## What Phase 1 Does Not Do
+
+- No model training
+- No final occupancy inference
+- No CSI processing
+- No BLE tracking
+- No database, Docker, Redis, or background workers
 
 ## Run
 
@@ -20,15 +31,17 @@ py -m pip install -r requirements.txt
 py server.py
 ```
 
-The server listens on `0.0.0.0:5000`, so an ESP32 on the same Wi-Fi network can post to:
+The server listens on `0.0.0.0:5000`, so an ESP32 on the same Wi-Fi network can post to your PC:
 
 ```text
 http://YOUR_PC_IP_ADDRESS:5000/sensor
 ```
 
-## ESP32 JSON Payload
+## Main Sensor Endpoint
 
-Send a `POST` request with JSON:
+Use `POST /sensor` for new ESP32 firmware.
+
+PIR + Wi-Fi RSSI sample:
 
 ```json
 {
@@ -40,42 +53,106 @@ Send a `POST` request with JSON:
 }
 ```
 
+PIR-only sample:
+
+```json
+{
+  "sensor": "living-room-1",
+  "uptime_ms": 123456,
+  "pir": 0
+}
+```
+
+RSSI-only sample:
+
+```json
+{
+  "sensor": "living-room-1",
+  "uptime_ms": 123456,
+  "wifi_rssi": -63
+}
+```
+
 `pir` can be `1`, `0`, `true`, `false`, `"motion"`, or `"clear"`.
 
-The old `POST /pir` endpoint still works for PIR-only sketches, but new code should use `POST /sensor`.
+## Backward Compatibility
 
-## Web Dashboard
+The old `POST /pir` endpoint still works. It uses the same ingestion logic as `/sensor`.
 
-Open this in a browser:
+Legacy payload:
+
+```json
+{
+  "sensor": "living-room-1",
+  "motion": 1,
+  "uptime_ms": 123456,
+  "rssi": -62
+}
+```
+
+## Dashboard
+
+Open:
 
 ```text
 http://YOUR_PC_IP_ADDRESS:5000/
 ```
 
-The dashboard graphs recent PIR-derived presence, shows Wi-Fi RSSI per ESP32, and updates live.
+The dashboard shows:
 
-Raw samples are appended to:
+- Current state per ESP32
+- PIR-derived presence timeline
+- Wi-Fi RSSI trend per ESP32
+- Recent PIR events
 
-```text
-data/raw/sensor_samples.jsonl
-```
+## API
 
-## API Status
-
-For raw JSON status:
-
-```text
-http://YOUR_PC_IP_ADDRESS:5000/status
-```
-
-For recent motion events:
+Raw status:
 
 ```text
-http://YOUR_PC_IP_ADDRESS:5000/events
+GET /status
 ```
 
-For endpoint details:
+Recent raw samples:
 
 ```text
-http://YOUR_PC_IP_ADDRESS:5000/api
+GET /samples
+GET /samples?limit=100
+GET /samples?sensor=living-room-1
 ```
+
+Compatibility event endpoint:
+
+```text
+GET /events
+```
+
+Endpoint details:
+
+```text
+GET /api
+```
+
+## Repo Layout
+
+```text
+PresenceDetection/
+  server.py
+  requirements.txt
+  templates/
+  static/
+  esp32/
+    pir_sender/
+    wifi_rssi_sender/
+  data/
+    raw/
+    labeled/
+```
+
+## Next Milestones
+
+1. Send PIR + Wi-Fi RSSI samples from one ESP32.
+2. Add two more ESP32 boards.
+3. Collect occupied and empty sessions.
+4. Label sessions in `data/labeled/`.
+5. Add feature extraction and a simple model after enough data exists.

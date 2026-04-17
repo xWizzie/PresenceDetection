@@ -12,14 +12,14 @@
       <div>
         <p class="eyebrow">Live sensor timeline</p>
         <h1>Presence Monitor</h1>
-        <p class="lede">PIR and Wi-Fi RSSI samples from your ESP32 boards, grouped into a simple presence signal for the room.</p>
+        <p class="lede">Phase-1 data collection: PIR and Wi-Fi RSSI samples from ESP32 boards. PIR is used as a rough debugging signal, not final presence inference.</p>
       </div>
       <div class="pill clear" id="connectionState">Connecting</div>
     </header>
 
     <section class="status-band" aria-label="Current presence">
       <div class="presence-panel">
-        <p class="label">Home presence</p>
+        <p class="label">PIR-derived presence</p>
         <p class="value" id="homePresence">Waiting</p>
         <p class="meta" id="homeMeta">No motion reports yet.</p>
       </div>
@@ -41,9 +41,19 @@
       </div>
     </section>
 
-    <section class="event-section" aria-label="Recent events">
+    <section class="graph-section" aria-label="Wi-Fi RSSI graph">
       <div class="section-head">
-        <h2>Recent Events</h2>
+        <h2>Wi-Fi RSSI Trend</h2>
+        <span class="pill">Raw phase-1 signal</span>
+      </div>
+      <div class="chart-shell">
+        <canvas id="rssiChart" height="360"></canvas>
+      </div>
+    </section>
+
+    <section class="event-section" aria-label="Recent PIR events">
+      <div class="section-head">
+        <h2>Recent PIR Events</h2>
         <span class="pill" id="eventCount">0 events</span>
       </div>
       <div class="event-list" id="eventList"></div>
