@@ -1,0 +1,439 @@
+const appState = {
+  status: null,
+  events: [],
+  minutes: 30,
+  polling: false,
+  resizeTimer: null
+};
+
+const POLL_INTERVAL_MS = 1000;
+const colors = ["#2f7d5c", "#d95c4a", "#2860a8", "#b7791f", "#0f766e"];
+
+const connectionState = document.getElementById("connectionState");
+const homePresence = document.getElementById("homePresence");
+const homeMeta = document.getElementById("homeMeta");
+const sensorGrid = document.getElementById("sensorGrid");
+const eventList = document.getElementById("eventList");
+const eventCount = document.getElementById("eventCount");
+const canvas = document.getElementById("motionChart");
+const ctx = canvas.getContext("2d");
+
+function formatClock(timestamp) {
+  if (!timestamp) {
+    return "Never";
+  }
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function formatAge(seconds) {
+  if (seconds === null || seconds === undefined) {
+    return "No motion";
+  }
+  if (seconds < 1) {
+    return "Now";
+  }
+  if (seconds < 60) {
+    return Math.round(seconds) + "s ago";
+  }
+  return Math.round(seconds / 60) + "m ago";
+}
+
+async function getJSON(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(url + " returned " + response.status);
+  }
+  return response.json();
+}
+
+async function refresh() {
+  if (appState.polling) {
+    return;
+  }
+
+  appState.polling = true;
+
+  try {
+    const limit = appState.minutes * 60;
+    const results = await Promise.all([
+      getJSON("/status"),
+      getJSON("/events?limit=" + limit)
+    ]);
+
+    appState.status = results[0];
+    appState.events = results[1].events || [];
+    connectionState.textContent = "Live";
+    connectionState.className = "pill present";
+    render();
+  } catch (error) {
+    connectionState.textContent = "Offline";
+    connectionState.className = "pill clear";
+    console.error(error);
+  } finally {
+    appState.polling = false;
+  }
+}
+
+function startPolling() {
+  refresh();
+  window.setInterval(refresh, POLL_INTERVAL_MS);
+}
+
+function render() {
+  renderPresence();
+  renderSensors();
+  renderEvents();
+  drawChart();
+}
+
+function renderPresence() {
+  if (!appState.status) {
+    return;
+  }
+
+  const sensors = Object.values(appState.status.sensors || {});
+  const seenCount = sensors.filter(sensor => sensor.seen).length;
+  const activeCount = sensors.filter(sensor => sensor.present).length;
+
+  homePresence.textContent = appState.status.home_present ? "Present" : "Clear";
+  homeMeta.textContent = activeCount + " active sensor" + (activeCount === 1 ? "" : "s")
+    + " / " + seenCount + " seen. Timeout "
+    + appState.status.presence_timeout_seconds + "s. Polling every 1s.";
+}
+
+function renderSensors() {
+  const sensors = appState.status ? appState.status.sensors || {} : {};
+  const entries = Object.entries(sensors);
+
+  if (!entries.length) {
+    sensorGrid.innerHTML = '<div class="empty">Waiting for ESP32 sensors.</div>';
+    return;
+  }
+
+  sensorGrid.innerHTML = entries.map(([name, sensor]) => {
+    const dotClass = sensor.motion ? "motion" : sensor.present ? "present" : "";
+    const state = sensor.present ? "Present" : sensor.seen ? "Clear" : "Not seen";
+    const motion = sensor.motion ? "Motion" : "Clear";
+    const rssi = sensor.rssi === null || sensor.rssi === undefined ? "-" : sensor.rssi + " dBm";
+    return `
+      <article class="sensor-card">
+        <p class="sensor-name"><span class="dot ${dotClass}"></span>${name}</p>
+        <div class="sensor-metric"><span>Status</span><strong>${state}</strong></div>
+        <div class="sensor-metric"><span>PIR</span><strong>${motion}</strong></div>
+        <div class="sensor-metric"><span>Last motion</span><strong>${formatAge(sensor.seconds_since_last_motion)}</strong></div>
+        <div class="sensor-metric"><span>RSSI</span><strong>${rssi}</strong></div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderEvents() {
+  const events = appState.events.slice(-12).reverse();
+  eventCount.textContent = appState.events.length + " stored";
+
+  if (!events.length) {
+    eventList.innerHTML = '<div class="empty">Move in front of the PIR sensor to start the timeline.</div>';
+    return;
+  }
+
+  eventList.innerHTML = events.map(event => {
+    const state = event.motion ? "Motion" : "Clear";
+    const rssi = event.rssi === null || event.rssi === undefined ? "-" : event.rssi + " dBm";
+    return `
+      <div class="event-row">
+        <span class="event-time">${formatClock(event.timestamp)}</span>
+        <strong>${event.sensor}</strong>
+        <span>${state}</span>
+        <span class="event-extra">${rssi}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function drawChart() {
+  const status = appState.status;
+  const events = appState.events || [];
+  const sensors = status ? Object.keys(status.sensors || {}) : [];
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(320, Math.floor(rect.width));
+  const height = Math.max(300, Math.floor(rect.height));
+
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.fillStyle = "#fbfcfc";
+  ctx.fillRect(0, 0, width, height);
+
+  const left = width < 560 ? 82 : 122;
+  const right = 22;
+  const top = 30;
+  const bottom = 44;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const now = Date.now();
+  const start = now - appState.minutes * 60 * 1000;
+  const rowHeight = sensors.length ? chartHeight / sensors.length : chartHeight;
+  const timeoutMs = status
+    ? status.presence_timeout_seconds * 1000
+    : 30000;
+  const groupedEvents = groupEventsBySensor(events);
+
+  drawGrid(width, height, left, right, top, bottom, start, now);
+
+  if (!sensors.length) {
+    ctx.fillStyle = "#63736f";
+    ctx.font = "700 16px Segoe UI, Arial, sans-serif";
+    ctx.fillText("Waiting for sensor data", left, top + 34);
+    return;
+  }
+
+  sensors.forEach((sensor, index) => {
+    const y = top + index * rowHeight;
+    const mid = y + rowHeight / 2;
+    const color = colors[index % colors.length];
+
+    ctx.fillStyle = "#15211f";
+    ctx.font = "700 12px Segoe UI, Arial, sans-serif";
+    ctx.fillText(sensor, 12, mid + 4, left - 20);
+
+    ctx.strokeStyle = "#d8e1de";
+    ctx.beginPath();
+    ctx.moveTo(left, y + rowHeight);
+    ctx.lineTo(width - right, y + rowHeight);
+    ctx.stroke();
+
+    const sensorEvents = groupedEvents.get(sensor) || [];
+    drawPresenceLine({
+      sensorEvents,
+      sensorIndex: index,
+      color,
+      start,
+      now,
+      timeoutMs,
+      left,
+      chartWidth,
+      rowTop: y,
+      rowHeight
+    });
+  });
+
+  ctx.fillStyle = "#63736f";
+  ctx.font = "12px Segoe UI, Arial, sans-serif";
+  ctx.fillText(appState.minutes + " min ago", left, height - 15);
+  ctx.textAlign = "right";
+  ctx.fillText("now", width - right, height - 15);
+  ctx.textAlign = "left";
+}
+
+function groupEventsBySensor(events) {
+  const grouped = new Map();
+
+  events.forEach(event => {
+    const time = new Date(event.timestamp).getTime();
+    if (Number.isNaN(time)) {
+      return;
+    }
+
+    const sensorEvents = grouped.get(event.sensor) || [];
+    sensorEvents.push({ ...event, time });
+    grouped.set(event.sensor, sensorEvents);
+  });
+
+  grouped.forEach(sensorEvents => {
+    sensorEvents.sort((first, second) => first.time - second.time);
+  });
+
+  return grouped;
+}
+
+function drawPresenceLine(options) {
+  const {
+    sensorEvents,
+    sensorIndex,
+    color,
+    start,
+    now,
+    timeoutMs,
+    left,
+    chartWidth,
+    rowTop,
+    rowHeight
+  } = options;
+
+  const rowBottom = rowTop + rowHeight;
+  const highY = rowTop + rowHeight * 0.18;
+  const lowY = rowBottom - rowHeight * 0.18;
+  const sampleCount = Math.max(80, Math.floor(chartWidth / 5));
+  const points = [];
+
+  for (let i = 0; i <= sampleCount; i += 1) {
+    const ratio = i / sampleCount;
+    const time = start + (now - start) * ratio;
+    const active = isSensorPresentAt(sensorEvents, time, timeoutMs);
+    const value = active
+      ? activePresenceValue(time, now, sensorIndex)
+      : 0.06;
+
+    points.push({
+      x: left + chartWidth * ratio,
+      y: lowY - (lowY - highY) * value,
+      active
+    });
+  }
+
+  drawSignalFill(points, rowBottom, color);
+  drawSignalStroke(points, color);
+  drawEventDots(sensorEvents, start, now, left, chartWidth, lowY, highY, color);
+}
+
+function isSensorPresentAt(sensorEvents, time, timeoutMs) {
+  for (let i = sensorEvents.length - 1; i >= 0; i -= 1) {
+    const event = sensorEvents[i];
+
+    if (event.time > time) {
+      continue;
+    }
+
+    if (!event.motion) {
+      continue;
+    }
+
+    return time - event.time <= timeoutMs;
+  }
+
+  return false;
+}
+
+function activePresenceValue(time, now, sensorIndex) {
+  const seconds = time / 1000;
+  const animationShift = now / 380;
+  const waveA = Math.sin(seconds * 3.2 + animationShift + sensorIndex);
+  const waveB = Math.sin(seconds * 8.4 + animationShift * 0.7);
+  const value = 0.74 + waveA * 0.11 + waveB * 0.05;
+
+  return Math.max(0.52, Math.min(0.96, value));
+}
+
+function drawSignalFill(points, rowBottom, color) {
+  if (!points.length) {
+    return;
+  }
+
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, rowBottom - 8);
+  points.forEach(point => ctx.lineTo(point.x, point.y));
+  ctx.lineTo(points[points.length - 1].x, rowBottom - 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawSignalStroke(points, color) {
+  if (!points.length) {
+    return;
+  }
+
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) {
+      ctx.moveTo(point.x, point.y);
+      return;
+    }
+    ctx.lineTo(point.x, point.y);
+  });
+  ctx.stroke();
+}
+
+function drawEventDots(sensorEvents, start, now, left, chartWidth, lowY, highY, color) {
+  sensorEvents.forEach(event => {
+    if (event.time < start || event.time > now) {
+      return;
+    }
+
+    const x = left + ((event.time - start) / (now - start)) * chartWidth;
+    const y = event.motion ? highY + 8 : lowY - 8;
+
+    ctx.fillStyle = event.motion ? color : "#9aa6a3";
+    ctx.beginPath();
+    ctx.arc(x, y, event.motion ? 4 : 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function drawGrid(width, height, left, right, top, bottom, start, now) {
+  const chartWidth = width - left - right;
+  const gridCount = 6;
+
+  ctx.strokeStyle = "#e5ece9";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#63736f";
+  ctx.font = "11px Segoe UI, Arial, sans-serif";
+
+  for (let i = 0; i <= gridCount; i += 1) {
+    const x = left + (chartWidth / gridCount) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, height - bottom);
+    ctx.stroke();
+
+    if (i > 0 && i < gridCount) {
+      const time = start + ((now - start) / gridCount) * i;
+      ctx.fillText(formatClock(time), x - 26, height - 15);
+    }
+  }
+}
+
+document.getElementById("rangeButtons").addEventListener("click", event => {
+  const button = event.target.closest("button[data-minutes]");
+  if (!button) {
+    return;
+  }
+
+  appState.minutes = Number(button.dataset.minutes);
+  document.querySelectorAll("#rangeButtons button").forEach(item => {
+    item.classList.toggle("active", item === button);
+  });
+  refresh();
+});
+
+window.addEventListener("resize", () => {
+  window.clearTimeout(appState.resizeTimer);
+  appState.resizeTimer = window.setTimeout(drawChart, 120);
+});
+
+function startChartAnimation() {
+  let lastDraw = 0;
+
+  function frame(timestamp) {
+    if (timestamp - lastDraw > 100) {
+      drawChart();
+      lastDraw = timestamp;
+    }
+    window.requestAnimationFrame(frame);
+  }
+
+  window.requestAnimationFrame(frame);
+}
+
+startPolling();
+startChartAnimation();

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Presence Monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Live PIR timeline</p>
+        <h1>Presence Monitor</h1>
+        <p class="lede">Motion pulses from your ESP32 boards, grouped into a simple presence signal for the room.</p>
+      </div>
+      <div class="pill clear" id="connectionState">Connecting</div>
+    </header>
+
+    <section class="status-band" aria-label="Current presence">
+      <div class="presence-panel">
+        <p class="label">Home presence</p>
+        <p class="value" id="homePresence">Waiting</p>
+        <p class="meta" id="homeMeta">No motion reports yet.</p>
+      </div>
+      <div class="sensor-grid" id="sensorGrid"></div>
+    </section>
+
+    <section class="graph-section" aria-label="Motion graph">
+      <div class="section-head">
+        <h2>Motion Timeline</h2>
+        <div class="actions" id="rangeButtons">
+          <button type="button" data-minutes="5">5 min</button>
+          <button type="button" data-minutes="15">15 min</button>
+          <button type="button" data-minutes="30" class="active">30 min</button>
+          <button type="button" data-minutes="60">1 hour</button>
+        </div>
+      </div>
+      <div class="chart-shell">
+        <canvas id="motionChart" height="360"></canvas>
+      </div>
+    </section>
+
+    <section class="event-section" aria-label="Recent events">
+      <div class="section-head">
+        <h2>Recent Events</h2>
+        <span class="pill" id="eventCount">0 events</span>
+      </div>
+      <div class="event-list" id="eventList"></div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
