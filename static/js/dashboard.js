@@ -48,6 +48,13 @@ function formatAge(seconds) {
   return Math.round(seconds / 60) + "m ago";
 }
 
+function getPirValue(event) {
+  if (event.pir !== null && event.pir !== undefined) {
+    return event.pir;
+  }
+  return event.motion;
+}
+
 async function getJSON(url) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -121,17 +128,21 @@ function renderSensors() {
   }
 
   sensorGrid.innerHTML = entries.map(([name, sensor]) => {
-    const dotClass = sensor.motion ? "motion" : sensor.present ? "present" : "";
+    const dotClass = sensor.pir ? "motion" : sensor.present ? "present" : "";
     const state = sensor.present ? "Present" : sensor.seen ? "Clear" : "Not seen";
-    const motion = sensor.motion ? "Motion" : "Clear";
-    const rssi = sensor.rssi === null || sensor.rssi === undefined ? "-" : sensor.rssi + " dBm";
+    const pir = sensor.pir === null || sensor.pir === undefined
+      ? "No PIR"
+      : sensor.pir ? "Motion" : "Clear";
+    const wifiRssi = sensor.wifi_rssi === null || sensor.wifi_rssi === undefined
+      ? "-"
+      : sensor.wifi_rssi + " dBm";
     return `
       <article class="sensor-card">
         <p class="sensor-name"><span class="dot ${dotClass}"></span>${name}</p>
         <div class="sensor-metric"><span>Status</span><strong>${state}</strong></div>
-        <div class="sensor-metric"><span>PIR</span><strong>${motion}</strong></div>
+        <div class="sensor-metric"><span>PIR</span><strong>${pir}</strong></div>
         <div class="sensor-metric"><span>Last motion</span><strong>${formatAge(sensor.seconds_since_last_motion)}</strong></div>
-        <div class="sensor-metric"><span>RSSI</span><strong>${rssi}</strong></div>
+        <div class="sensor-metric"><span>Wi-Fi RSSI</span><strong>${wifiRssi}</strong></div>
       </article>
     `;
   }).join("");
@@ -147,14 +158,19 @@ function renderEvents() {
   }
 
   eventList.innerHTML = events.map(event => {
-    const state = event.motion ? "Motion" : "Clear";
-    const rssi = event.rssi === null || event.rssi === undefined ? "-" : event.rssi + " dBm";
+    const pir = getPirValue(event);
+    const state = pir === null || pir === undefined
+      ? "RSSI sample"
+      : pir ? "PIR motion" : "PIR clear";
+    const wifiRssi = event.wifi_rssi === null || event.wifi_rssi === undefined
+      ? "-"
+      : event.wifi_rssi + " dBm";
     return `
       <div class="event-row">
         <span class="event-time">${formatClock(event.timestamp)}</span>
         <strong>${event.sensor}</strong>
         <span>${state}</span>
-        <span class="event-extra">${rssi}</span>
+        <span class="event-extra">${wifiRssi}</span>
       </div>
     `;
   }).join("");
@@ -218,7 +234,6 @@ function drawChart() {
     const sensorEvents = groupedEvents.get(sensor) || [];
     drawPresenceLine({
       sensorEvents,
-      sensorIndex: index,
       color,
       start,
       now,
@@ -262,7 +277,6 @@ function groupEventsBySensor(events) {
 function drawPresenceLine(options) {
   const {
     sensorEvents,
-    sensorIndex,
     color,
     start,
     now,
@@ -283,9 +297,7 @@ function drawPresenceLine(options) {
     const ratio = i / sampleCount;
     const time = start + (now - start) * ratio;
     const active = isSensorPresentAt(sensorEvents, time, timeoutMs);
-    const value = active
-      ? activePresenceValue(time, now, sensorIndex)
-      : 0.06;
+    const value = active ? 0.82 : 0.06;
 
     points.push({
       x: left + chartWidth * ratio,
@@ -307,7 +319,7 @@ function isSensorPresentAt(sensorEvents, time, timeoutMs) {
       continue;
     }
 
-    if (!event.motion) {
+    if (!getPirValue(event)) {
       continue;
     }
 
@@ -315,16 +327,6 @@ function isSensorPresentAt(sensorEvents, time, timeoutMs) {
   }
 
   return false;
-}
-
-function activePresenceValue(time, now, sensorIndex) {
-  const seconds = time / 1000;
-  const animationShift = now / 380;
-  const waveA = Math.sin(seconds * 3.2 + animationShift + sensorIndex);
-  const waveB = Math.sin(seconds * 8.4 + animationShift * 0.7);
-  const value = 0.74 + waveA * 0.11 + waveB * 0.05;
-
-  return Math.max(0.52, Math.min(0.96, value));
 }
 
 function drawSignalFill(points, rowBottom, color) {
@@ -337,7 +339,8 @@ function drawSignalFill(points, rowBottom, color) {
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(points[0].x, rowBottom - 8);
-  points.forEach(point => ctx.lineTo(point.x, point.y));
+  ctx.lineTo(points[0].x, points[0].y);
+  drawStepSegments(points);
   ctx.lineTo(points[points.length - 1].x, rowBottom - 8);
   ctx.closePath();
   ctx.fill();
@@ -354,14 +357,19 @@ function drawSignalStroke(points, color) {
   ctx.lineJoin = "round";
   ctx.strokeStyle = color;
   ctx.beginPath();
-  points.forEach((point, index) => {
-    if (index === 0) {
-      ctx.moveTo(point.x, point.y);
-      return;
-    }
-    ctx.lineTo(point.x, point.y);
-  });
+  ctx.moveTo(points[0].x, points[0].y);
+  drawStepSegments(points);
   ctx.stroke();
+}
+
+function drawStepSegments(points) {
+  for (let index = 1; index < points.length; index += 1) {
+    const point = points[index];
+    const previous = points[index - 1];
+
+    ctx.lineTo(point.x, previous.y);
+    ctx.lineTo(point.x, point.y);
+  }
 }
 
 function drawEventDots(sensorEvents, start, now, left, chartWidth, lowY, highY, color) {
@@ -371,11 +379,13 @@ function drawEventDots(sensorEvents, start, now, left, chartWidth, lowY, highY, 
     }
 
     const x = left + ((event.time - start) / (now - start)) * chartWidth;
-    const y = event.motion ? highY + 8 : lowY - 8;
+    const pir = getPirValue(event);
+    const hasPir = pir !== null && pir !== undefined;
+    const y = pir ? highY + 8 : lowY - 8;
 
-    ctx.fillStyle = event.motion ? color : "#9aa6a3";
+    ctx.fillStyle = pir ? color : "#9aa6a3";
     ctx.beginPath();
-    ctx.arc(x, y, event.motion ? 4 : 3, 0, Math.PI * 2);
+    ctx.arc(x, y, pir ? 4 : hasPir ? 3 : 2, 0, Math.PI * 2);
     ctx.fill();
   });
 }
@@ -421,19 +431,4 @@ window.addEventListener("resize", () => {
   appState.resizeTimer = window.setTimeout(drawChart, 120);
 });
 
-function startChartAnimation() {
-  let lastDraw = 0;
-
-  function frame(timestamp) {
-    if (timestamp - lastDraw > 100) {
-      drawChart();
-      lastDraw = timestamp;
-    }
-    window.requestAnimationFrame(frame);
-  }
-
-  window.requestAnimationFrame(frame);
-}
-
 startPolling();
-startChartAnimation();

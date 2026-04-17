@@ -10,9 +10,9 @@
   <main class="app">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Live PIR timeline</p>
+        <p class="eyebrow">Live sensor timeline</p>
         <h1>Presence Monitor</h1>
-        <p class="lede">Motion pulses from your ESP32 boards, grouped into a simple presence signal for the room.</p>
+        <p class="lede">PIR and Wi-Fi RSSI samples from your ESP32 boards, grouped into a simple presence signal for the room.</p>
       </div>
       <div class="pill clear" id="connectionState">Connecting</div>
     </header>
@@ -26,9 +26,9 @@
       <div class="sensor-grid" id="sensorGrid"></div>
     </section>
 
-    <section class="graph-section" aria-label="Motion graph">
+    <section class="graph-section" aria-label="Presence graph">
       <div class="section-head">
-        <h2>Motion Timeline</h2>
+        <h2>Presence Timeline</h2>
         <div class="actions" id="rangeButtons">
           <button type="button" data-minutes="5">5 min</button>
           <button type="button" data-minutes="15">15 min</button>
