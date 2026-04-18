@@ -10,7 +10,7 @@ The goal is not final presence detection yet. Phase 1 collects clean time-series
 - Tracks latest PIR and Wi-Fi RSSI values per node
 - Keeps recent samples in memory for the dashboard
 - Stores accepted samples in SQLite at `data/raw/sensor_samples.sqlite3`
-- Appends accepted samples to `data/raw/sensor_samples.jsonl`
+- Best-effort debug log append to `data/raw/sensor_samples.jsonl`
 - Shows live PIR-derived presence and Wi-Fi RSSI trends
 
 ## What Phase 1 Does Not Do
@@ -153,12 +153,52 @@ Endpoint details:
 GET /api
 ```
 
+## Build A Feature Dataset
+
+After collecting raw ESP32 samples, build a CSV dataset from SQLite:
+
+```powershell
+py build_dataset.py
+```
+
+Default output:
+
+```text
+data/datasets/features.csv
+```
+
+The builder creates sliding windows per `node_id` using `received_at` by default.
+
+Default settings:
+
+- window size: `5` seconds
+- step: `1` second
+- minimum samples per window: `3`
+- label: `moving` if PIR is active in the window, otherwise `empty`
+
+Useful options:
+
+```powershell
+py build_dataset.py --node-id node_1
+py build_dataset.py --window-seconds 3 --step-seconds 1
+py build_dataset.py --time-field timestamp_ms
+py build_dataset.py --output data/datasets/node_1_features.csv
+```
+
+CSV columns include:
+
+```text
+node_id, window_start, window_end, sample_count, rssi_mean, rssi_std, rssi_min, rssi_max, rssi_delta, pir_sum, pir_any, label
+```
+
 ## Repo Layout
 
 ```text
 PresenceDetection/
   server.py
   storage.py
+  features.py
+  build_dataset.py
   requirements.txt
   templates/
   static/
@@ -167,6 +207,7 @@ PresenceDetection/
     wifi_rssi_sender/
   data/
     raw/
+    datasets/
     labeled/
 ```
 
@@ -175,5 +216,6 @@ PresenceDetection/
 1. Send PIR + Wi-Fi RSSI samples from one ESP32.
 2. Add two more ESP32 boards.
 3. Collect occupied and empty sessions.
-4. Label sessions in `data/labeled/`.
-5. Add feature extraction and a simple model after enough data exists.
+4. Build feature datasets with `build_dataset.py`.
+5. Label sessions in `data/labeled/`.
+6. Train a simple model after enough data exists.

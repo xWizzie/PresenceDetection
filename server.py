@@ -1,12 +1,12 @@
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from threading import Lock
 
 from flask import Flask, jsonify, render_template, request
 
 from storage import (
     DEFAULT_DB_PATH,
+    PROJECT_ROOT,
     count_samples,
     fetch_recent_samples,
     init_storage,
@@ -19,7 +19,7 @@ PRESENCE_TIMEOUT_SECONDS = 30
 EXPECTED_NODES = ("node_1", "node_2", "node_3")
 EVENT_HISTORY_LIMIT = 1000
 STATUS_HISTORY_LIMIT = 60
-RAW_DATA_DIR = Path("data/raw")
+RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 RAW_SAMPLE_LOG = RAW_DATA_DIR / "sensor_samples.jsonl"
 
 sensor_state = {}
@@ -107,9 +107,12 @@ def is_present(sensor_name: str) -> bool:
 
 
 def append_raw_sample(sample):
-    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with RAW_SAMPLE_LOG.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(sample, separators=(",", ":")) + "\n")
+    try:
+        RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with RAW_SAMPLE_LOG.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(sample, separators=(",", ":")) + "\n")
+    except Exception as error:
+        print(f"Warning: could not append JSONL sample: {error}")
 
 
 def normalize_sensor_payload(data, source_endpoint):

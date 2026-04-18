@@ -1,7 +1,23 @@
 import sqlite3
 from pathlib import Path
 
-DEFAULT_DB_PATH = Path("data/raw/sensor_samples.sqlite3")
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "raw" / "sensor_samples.sqlite3"
+
+
+SENSOR_SAMPLES_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS sensor_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        received_at TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        timestamp_ms INTEGER,
+        uptime_ms INTEGER,
+        pir INTEGER,
+        wifi_rssi REAL,
+        source_endpoint TEXT,
+        ip TEXT
+    )
+"""
 
 
 def connect(db_path=DEFAULT_DB_PATH):
@@ -14,19 +30,8 @@ def init_storage(db_path=DEFAULT_DB_PATH):
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with connect(db_path) as connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS sensor_samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                received_at TEXT NOT NULL,
-                node_id TEXT NOT NULL,
-                timestamp_ms REAL,
-                uptime_ms REAL,
-                pir INTEGER,
-                wifi_rssi REAL,
-                source_endpoint TEXT,
-                ip TEXT
-            )
-        """)
+        connection.execute(SENSOR_SAMPLES_SCHEMA)
+        migrate_sensor_samples_schema(connection)
         connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_sensor_samples_node_received
             ON sensor_samples (node_id, received_at)
@@ -35,6 +40,46 @@ def init_storage(db_path=DEFAULT_DB_PATH):
             CREATE INDEX IF NOT EXISTS idx_sensor_samples_received
             ON sensor_samples (received_at)
         """)
+
+
+def migrate_sensor_samples_schema(connection):
+    columns = {
+        row["name"]: row["type"].upper()
+        for row in connection.execute("PRAGMA table_info(sensor_samples)")
+    }
+    if (
+        columns.get("timestamp_ms") == "INTEGER"
+        and columns.get("uptime_ms") == "INTEGER"
+    ):
+        return
+
+    connection.execute("ALTER TABLE sensor_samples RENAME TO sensor_samples_old")
+    connection.execute(SENSOR_SAMPLES_SCHEMA)
+    connection.execute("""
+        INSERT INTO sensor_samples (
+            id,
+            received_at,
+            node_id,
+            timestamp_ms,
+            uptime_ms,
+            pir,
+            wifi_rssi,
+            source_endpoint,
+            ip
+        )
+        SELECT
+            id,
+            received_at,
+            node_id,
+            CAST(timestamp_ms AS INTEGER),
+            CAST(uptime_ms AS INTEGER),
+            pir,
+            wifi_rssi,
+            source_endpoint,
+            ip
+        FROM sensor_samples_old
+    """)
+    connection.execute("DROP TABLE sensor_samples_old")
 
 
 def insert_sensor_sample(sample, db_path=DEFAULT_DB_PATH):
@@ -100,6 +145,34 @@ def fetch_recent_samples(limit=300, node_id=None, db_path=DEFAULT_DB_PATH):
     samples = [row_to_sample(row) for row in rows]
     samples.reverse()
     return samples
+
+
+def fetch_samples(node_id=None, db_path=DEFAULT_DB_PATH):
+    query = """
+        SELECT
+            id,
+            received_at,
+            node_id,
+            timestamp_ms,
+            uptime_ms,
+            pir,
+            wifi_rssi,
+            source_endpoint,
+            ip
+        FROM sensor_samples
+    """
+    params = []
+
+    if node_id:
+        query += " WHERE node_id = ?"
+        params.append(node_id)
+
+    query += " ORDER BY node_id ASC, received_at ASC, id ASC"
+
+    with connect(db_path) as connection:
+        rows = connection.execute(query, params).fetchall()
+
+    return [row_to_sample(row) for row in rows]
 
 
 def count_samples(node_id=None, db_path=DEFAULT_DB_PATH):
