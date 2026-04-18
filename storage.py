@@ -13,7 +13,7 @@ SENSOR_SAMPLES_SCHEMA = """
         timestamp_ms INTEGER,
         uptime_ms INTEGER,
         pir INTEGER,
-        wifi_rssi REAL,
+        wifi_rssi INTEGER,
         source_endpoint TEXT,
         ip TEXT
     )
@@ -50,6 +50,7 @@ def migrate_sensor_samples_schema(connection):
     if (
         columns.get("timestamp_ms") == "INTEGER"
         and columns.get("uptime_ms") == "INTEGER"
+        and columns.get("wifi_rssi") == "INTEGER"
     ):
         return
 
@@ -74,7 +75,7 @@ def migrate_sensor_samples_schema(connection):
             CAST(timestamp_ms AS INTEGER),
             CAST(uptime_ms AS INTEGER),
             pir,
-            wifi_rssi,
+            CAST(wifi_rssi AS INTEGER),
             source_endpoint,
             ip
         FROM sensor_samples_old

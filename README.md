@@ -174,7 +174,11 @@ Default settings:
 - window size: `5` seconds
 - step: `1` second
 - minimum samples per window: `3`
-- label: `moving` if PIR is active in the window, otherwise `empty`
+- label: `moving` if PIR is active in the window
+- label: `empty` if PIR values exist but are inactive in the window
+- label: `unlabeled` if the window has RSSI but no PIR values
+
+The `empty` label is only a placeholder for early experiments. PIR inactivity is not proof that the room is empty.
 
 Useful options:
 

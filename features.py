@@ -6,14 +6,13 @@ def parse_received_at(value):
     if not value:
         return None
 
-    normalized = value.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(normalized).timestamp()
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
 
 
-def sample_time_seconds(sample, time_field="received_at"):
+def sample_time_seconds(sample, time_field):
     if time_field == "timestamp_ms":
         timestamp_ms = sample.get("timestamp_ms")
         if timestamp_ms is None:
@@ -27,7 +26,7 @@ def sample_time_seconds(sample, time_field="received_at"):
     )
 
 
-def format_window_time(seconds, time_field="received_at"):
+def format_window_time(seconds, time_field):
     if time_field == "timestamp_ms":
         return int(round(seconds * 1000))
 
@@ -38,13 +37,23 @@ def format_window_time(seconds, time_field="received_at"):
     )
 
 
-def grouped_by_node(samples):
+def group_samples_by_node(samples, time_field="received_at"):
     grouped = {}
+
     for sample in samples:
         node_id = sample.get("node_id")
-        if not node_id:
+        sample_time = sample_time_seconds(sample, time_field)
+
+        if not node_id or sample_time is None:
             continue
-        grouped.setdefault(node_id, []).append(sample)
+
+        timed_sample = dict(sample)
+        timed_sample["_time_seconds"] = sample_time
+        grouped.setdefault(node_id, []).append(timed_sample)
+
+    for node_samples in grouped.values():
+        node_samples.sort(key=lambda sample: sample["_time_seconds"])
+
     return grouped
 
 
@@ -54,38 +63,25 @@ def build_feature_rows(
     step_seconds=1.0,
     min_samples=3,
     time_field="received_at",
-    empty_label="empty",
+    inactive_label="empty",
+    missing_pir_label="unlabeled",
 ):
     rows = []
+    grouped = group_samples_by_node(samples, time_field=time_field)
 
-    for node_id, node_samples in grouped_by_node(samples).items():
-        timed_samples = with_sample_times(node_samples, time_field)
+    for node_id, node_samples in grouped.items():
         rows.extend(build_node_feature_rows(
             node_id=node_id,
-            samples=timed_samples,
+            samples=node_samples,
             window_seconds=window_seconds,
             step_seconds=step_seconds,
             min_samples=min_samples,
             time_field=time_field,
-            empty_label=empty_label,
+            inactive_label=inactive_label,
+            missing_pir_label=missing_pir_label,
         ))
 
     return rows
-
-
-def with_sample_times(samples, time_field):
-    timed_samples = []
-
-    for sample in samples:
-        sample_time = sample_time_seconds(sample, time_field=time_field)
-        if sample_time is None:
-            continue
-
-        timed_sample = dict(sample)
-        timed_sample["_time_seconds"] = sample_time
-        timed_samples.append(timed_sample)
-
-    return sorted(timed_samples, key=lambda sample: sample["_time_seconds"])
 
 
 def build_node_feature_rows(
@@ -95,15 +91,15 @@ def build_node_feature_rows(
     step_seconds,
     min_samples,
     time_field,
-    empty_label,
+    inactive_label,
+    missing_pir_label,
 ):
     if not samples:
         return []
 
-    first_time = samples[0]["_time_seconds"]
-    last_time = samples[-1]["_time_seconds"]
     rows = []
-    window_start = first_time
+    window_start = samples[0]["_time_seconds"]
+    last_time = samples[-1]["_time_seconds"]
 
     while window_start + window_seconds <= last_time:
         window_end = window_start + window_seconds
@@ -112,18 +108,19 @@ def build_node_feature_rows(
             for sample in samples
             if window_start <= sample["_time_seconds"] < window_end
         ]
-
-        features = extract_window_features(
+        row = extract_window_features(
             node_id=node_id,
             window_start=window_start,
             window_end=window_end,
             samples=window_samples,
             min_samples=min_samples,
             time_field=time_field,
-            empty_label=empty_label,
+            inactive_label=inactive_label,
+            missing_pir_label=missing_pir_label,
         )
-        if features:
-            rows.append(features)
+
+        if row:
+            rows.append(row)
 
         window_start += step_seconds
 
@@ -137,7 +134,8 @@ def extract_window_features(
     samples,
     min_samples,
     time_field,
-    empty_label,
+    inactive_label,
+    missing_pir_label,
 ):
     if len(samples) < min_samples:
         return None
@@ -158,6 +156,13 @@ def extract_window_features(
     pir_sum = sum(1 for value in pir_values if value)
     pir_any = 1 if pir_sum else 0
 
+    if pir_any:
+        label = "moving"
+    elif pir_values:
+        label = inactive_label
+    else:
+        label = missing_pir_label
+
     return {
         "node_id": node_id,
         "window_start": format_window_time(window_start, time_field),
@@ -173,5 +178,5 @@ def extract_window_features(
         "pir_count": len(pir_values),
         "pir_sum": pir_sum,
         "pir_any": pir_any,
-        "label": "moving" if pir_any else empty_label,
+        "label": label,
     }

@@ -96,6 +96,9 @@ def parse_rssi_field(data):
         return None, None, False
 
     parsed, error = parse_number_field(data, field_name)
+    if parsed is not None and not isinstance(parsed, int):
+        return None, f"{field_name} must be an integer", True
+
     return parsed, error, True
 
 

@@ -29,13 +29,13 @@ FIELDNAMES = [
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build a sliding-window feature dataset from raw sensor samples."
+        description="Build a sliding-window feature dataset from sensor_samples.sqlite3."
     )
     parser.add_argument(
         "--db",
         type=Path,
         default=DEFAULT_DB_PATH,
-        help="Path to the SQLite database.",
+        help="SQLite database path.",
     )
     parser.add_argument(
         "--output",
@@ -70,14 +70,28 @@ def parse_args():
         "--time-field",
         choices=("received_at", "timestamp_ms"),
         default="received_at",
-        help="Time basis for windows.",
+        help="Time source used for windowing.",
     )
     parser.add_argument(
-        "--empty-label",
+        "--inactive-label",
         default="empty",
-        help="Placeholder label when no PIR activity appears in a window.",
+        help="Placeholder label when PIR exists but is inactive in a window.",
+    )
+    parser.add_argument(
+        "--missing-pir-label",
+        default="unlabeled",
+        help="Label when a window has RSSI but no PIR values.",
     )
     return parser.parse_args()
+
+
+def validate_args(args):
+    if args.window_seconds <= 0:
+        raise SystemExit("--window-seconds must be greater than 0")
+    if args.step_seconds <= 0:
+        raise SystemExit("--step-seconds must be greater than 0")
+    if args.min_samples <= 0:
+        raise SystemExit("--min-samples must be greater than 0")
 
 
 def write_csv(rows, output_path):
@@ -91,6 +105,7 @@ def write_csv(rows, output_path):
 
 def main():
     args = parse_args()
+    validate_args(args)
 
     init_storage(args.db)
     samples = fetch_samples(node_id=args.node_id, db_path=args.db)
@@ -100,7 +115,8 @@ def main():
         step_seconds=args.step_seconds,
         min_samples=args.min_samples,
         time_field=args.time_field,
-        empty_label=args.empty_label,
+        inactive_label=args.inactive_label,
+        missing_pir_label=args.missing_pir_label,
     )
     write_csv(rows, args.output)
 
