@@ -1,0 +1,5 @@
+data/raw/*.jsonl
+data/raw/*.sqlite3
+data/raw/*.sqlite3-*
+__pycache__/
+*.pyc

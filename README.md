@@ -6,9 +6,10 @@ The goal is not final presence detection yet. Phase 1 collects clean time-series
 
 ## What Phase 1 Does
 
-- Receives ESP32 sensor samples over HTTP
-- Tracks latest PIR and Wi-Fi RSSI values per sensor
+- Receives ESP32 node samples over HTTP
+- Tracks latest PIR and Wi-Fi RSSI values per node
 - Keeps recent samples in memory for the dashboard
+- Stores accepted samples in SQLite at `data/raw/sensor_samples.sqlite3`
 - Appends accepted samples to `data/raw/sensor_samples.jsonl`
 - Shows live PIR-derived presence and Wi-Fi RSSI trends
 
@@ -18,7 +19,7 @@ The goal is not final presence detection yet. Phase 1 collects clean time-series
 - No final occupancy inference
 - No CSI processing
 - No BLE tracking
-- No database, Docker, Redis, or background workers
+- No Docker, Redis, message brokers, or background workers
 
 ## Run
 
@@ -45,7 +46,7 @@ PIR + Wi-Fi RSSI sample:
 
 ```json
 {
-  "sensor": "living-room-1",
+  "node_id": "node_1",
   "timestamp_ms": 123456,
   "uptime_ms": 123456,
   "pir": 1,
@@ -57,7 +58,7 @@ PIR-only sample:
 
 ```json
 {
-  "sensor": "living-room-1",
+  "node_id": "node_1",
   "uptime_ms": 123456,
   "pir": 0
 }
@@ -67,13 +68,24 @@ RSSI-only sample:
 
 ```json
 {
-  "sensor": "living-room-1",
+  "node_id": "node_1",
   "uptime_ms": 123456,
   "wifi_rssi": -63
 }
 ```
 
 `pir` can be `1`, `0`, `true`, `false`, `"motion"`, or `"clear"`.
+
+`node_id` is the canonical identifier. The server still accepts older `sensor`, `sensor_id`, or `device` fields as aliases.
+
+Recommended ESP32 behavior:
+
+- Send a sample every 300-500 ms.
+- Use fixed ids: `node_1`, `node_2`, `node_3`.
+- Read PIR from the configured GPIO pin.
+- Send connected Wi-Fi RSSI with `WiFi.RSSI()`.
+- Reconnect Wi-Fi if disconnected, then continue posting.
+- Retry later if the server is temporarily unavailable.
 
 ## Backward Compatibility
 
@@ -83,7 +95,7 @@ Legacy payload:
 
 ```json
 {
-  "sensor": "living-room-1",
+  "sensor": "node_1",
   "motion": 1,
   "uptime_ms": 123456,
   "rssi": -62
@@ -100,7 +112,7 @@ http://YOUR_PC_IP_ADDRESS:5000/
 
 The dashboard shows:
 
-- Current state per ESP32
+- Current state per ESP32 node
 - PIR-derived presence timeline
 - Wi-Fi RSSI trend per ESP32
 - Recent PIR events
@@ -118,7 +130,15 @@ Recent raw samples:
 ```text
 GET /samples
 GET /samples?limit=100
-GET /samples?sensor=living-room-1
+GET /samples?node_id=node_1
+```
+
+Recent persisted samples from SQLite:
+
+```text
+GET /stored-samples
+GET /stored-samples?limit=100
+GET /stored-samples?node_id=node_1
 ```
 
 Compatibility event endpoint:
@@ -138,6 +158,7 @@ GET /api
 ```text
 PresenceDetection/
   server.py
+  storage.py
   requirements.txt
   templates/
   static/

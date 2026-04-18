@@ -5,10 +5,18 @@ from threading import Lock
 
 from flask import Flask, jsonify, render_template, request
 
+from storage import (
+    DEFAULT_DB_PATH,
+    count_samples,
+    fetch_recent_samples,
+    init_storage,
+    insert_sensor_sample,
+)
+
 app = Flask(__name__)
 
 PRESENCE_TIMEOUT_SECONDS = 30
-EXPECTED_SENSORS = ("living-room-1", "living-room-2", "living-room-3")
+EXPECTED_NODES = ("node_1", "node_2", "node_3")
 EVENT_HISTORY_LIMIT = 1000
 STATUS_HISTORY_LIMIT = 60
 RAW_DATA_DIR = Path("data/raw")
@@ -19,6 +27,8 @@ last_pir_motion_time = {}
 sensor_events = []
 samples_by_sensor = {}
 lock = Lock()
+
+init_storage()
 
 
 def utc_now():
@@ -63,6 +73,32 @@ def parse_optional_number(value):
     return parsed
 
 
+def parse_number_field(data, field_name, min_value=None):
+    if field_name not in data or data[field_name] == "":
+        return None, None
+
+    parsed = parse_optional_number(data[field_name])
+    if parsed is None:
+        return None, f"{field_name} must be a number"
+
+    if min_value is not None and parsed < min_value:
+        return None, f"{field_name} must be at least {min_value}"
+
+    return parsed, None
+
+
+def parse_rssi_field(data):
+    if "wifi_rssi" in data:
+        field_name = "wifi_rssi"
+    elif "rssi" in data:
+        field_name = "rssi"
+    else:
+        return None, None, False
+
+    parsed, error = parse_number_field(data, field_name)
+    return parsed, error, True
+
+
 def is_present(sensor_name: str) -> bool:
     last_seen = last_pir_motion_time.get(sensor_name)
     if last_seen is None:
@@ -77,8 +113,9 @@ def append_raw_sample(sample):
 
 
 def normalize_sensor_payload(data, source_endpoint):
-    sensor = str(
-        data.get("sensor")
+    node_id = str(
+        data.get("node_id")
+        or data.get("sensor")
         or data.get("sensor_id")
         or data.get("device")
         or ""
@@ -86,29 +123,35 @@ def normalize_sensor_payload(data, source_endpoint):
 
     has_pir = "pir" in data
     has_motion = "motion" in data
-    has_wifi_rssi = "wifi_rssi" in data
-    has_legacy_rssi = "rssi" in data
+    uptime_ms, uptime_error = parse_number_field(data, "uptime_ms", min_value=0)
+    timestamp_ms, timestamp_error = parse_number_field(
+        data,
+        "timestamp_ms",
+        min_value=0,
+    )
+    wifi_rssi, rssi_error, has_wifi_rssi = parse_rssi_field(data)
 
     pir_value = data.get("pir")
     if not has_pir:
         pir_value = data.get("motion")
 
     pir = parse_binary_signal(pir_value)
-    wifi_rssi = parse_optional_number(
-        data.get("wifi_rssi")
-        if data.get("wifi_rssi") is not None
-        else data.get("rssi")
-    )
 
     return {
-        "sensor": sensor,
+        "node_id": node_id,
+        "sensor": node_id,
         "pir": pir,
         "wifi_rssi": wifi_rssi,
-        "uptime_ms": parse_optional_number(data.get("uptime_ms")),
-        "timestamp_ms": parse_optional_number(data.get("timestamp_ms")),
+        "uptime_ms": uptime_ms,
+        "timestamp_ms": timestamp_ms,
         "source_endpoint": source_endpoint,
         "has_pir_signal": has_pir or has_motion,
-        "has_wifi_rssi": has_wifi_rssi or has_legacy_rssi,
+        "has_wifi_rssi": has_wifi_rssi,
+        "validation_errors": [
+            error
+            for error in (uptime_error, timestamp_error, rssi_error)
+            if error
+        ],
     }
 
 
@@ -155,12 +198,22 @@ def ingest_sensor_sample(data, source_endpoint):
     if not data:
         return {"ok": False, "error": "Invalid or missing JSON"}, 400
 
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "JSON payload must be an object"}, 400
+
     sample = normalize_sensor_payload(data, source_endpoint)
+    node_id = sample["node_id"]
     sensor = sample["sensor"]
     pir = sample["pir"]
 
-    if not sensor:
-        return {"ok": False, "error": "Missing sensor name"}, 400
+    if not node_id:
+        return {"ok": False, "error": "Missing node_id"}, 400
+
+    if sample["validation_errors"]:
+        return {
+            "ok": False,
+            "error": "; ".join(sample["validation_errors"]),
+        }, 400
 
     if sample["has_pir_signal"] and pir is None:
         return {
@@ -187,6 +240,7 @@ def ingest_sensor_sample(data, source_endpoint):
     event = {
         "timestamp": received_at,
         "server_received_at": received_at,
+        "node_id": node_id,
         "sensor": sensor,
         "pir": pir,
         "motion": pir,
@@ -229,6 +283,8 @@ def ingest_sensor_sample(data, source_endpoint):
         home_present = any(is_present(name) for name in sensor_state)
         event["present"] = present
 
+        sample_id = insert_sensor_sample(event)
+        event["sample_id"] = sample_id
         append_sample_to_memory(event)
         append_raw_sample(event)
 
@@ -240,6 +296,7 @@ def ingest_sensor_sample(data, source_endpoint):
 
     return {
         "ok": True,
+        "node_id": node_id,
         "sensor": sensor,
         "pir": pir,
         "motion": pir,
@@ -247,6 +304,7 @@ def ingest_sensor_sample(data, source_endpoint):
         "present": present,
         "home_present": home_present,
         "presence_timeout_seconds": PRESENCE_TIMEOUT_SECONDS,
+        "sample_id": sample_id,
     }, 200
 
 
@@ -255,6 +313,7 @@ def build_sensor_status(sensor: str, now: datetime):
     last_motion = last_pir_motion_time.get(sensor)
 
     return {
+        "node_id": sensor,
         "seen": state is not None,
         "pir": state["pir"] if state else None,
         "motion": state["motion"] if state else None,
@@ -277,7 +336,7 @@ def build_sensor_status(sensor: str, now: datetime):
 
 
 def build_status_payload(now: datetime):
-    sensor_names = sorted(set(EXPECTED_SENSORS) | set(sensor_state))
+    sensor_names = sorted(set(EXPECTED_NODES) | set(sensor_state))
     sensors = {
         sensor: build_sensor_status(sensor, now)
         for sensor in sensor_names
@@ -289,6 +348,7 @@ def build_status_payload(now: datetime):
         "presence_timeout_seconds": PRESENCE_TIMEOUT_SECONDS,
         "server_time": format_timestamp(now),
         "sensors": sensors,
+        "nodes": sensors,
         "sample_history_limit": EVENT_HISTORY_LIMIT,
     }
 
@@ -313,7 +373,7 @@ def sensor_help():
         "ok": True,
         "method": "POST",
         "example_json": {
-            "sensor": "living-room-1",
+            "node_id": "node_1",
             "timestamp_ms": 123456,
             "uptime_ms": 123456,
             "pir": 1,
@@ -338,7 +398,7 @@ def pir_help():
         "message": "Legacy PIR endpoint. Prefer POST /sensor.",
         "method": "POST",
         "example_json": {
-            "sensor": "living-room-1",
+            "node_id": "node_1",
             "motion": 1,
             "uptime_ms": 123456,
             "rssi": -62,
@@ -368,6 +428,12 @@ def samples():
     return jsonify(payload), status_code
 
 
+@app.route("/stored-samples", methods=["GET"])
+def stored_samples():
+    payload, status_code = stored_samples_payload()
+    return jsonify(payload), status_code
+
+
 def recent_samples_payload(response_key):
     try:
         limit = int(request.args.get("limit", "300"))
@@ -375,7 +441,7 @@ def recent_samples_payload(response_key):
         return {"ok": False, "error": "limit must be an integer"}, 400
 
     limit = max(1, min(limit, EVENT_HISTORY_LIMIT))
-    sensor_filter = request.args.get("sensor")
+    sensor_filter = request.args.get("node_id") or request.args.get("sensor")
 
     with lock:
         if sensor_filter:
@@ -390,6 +456,7 @@ def recent_samples_payload(response_key):
         "ok": True,
         response_key: samples_slice,
         "limit": limit,
+        "node_id": sensor_filter,
         "sensor": sensor_filter,
         "total_stored": total_stored,
     }
@@ -400,6 +467,30 @@ def recent_samples_payload(response_key):
         payload["events"] = samples_slice
 
     return payload, 200
+
+
+def stored_samples_payload():
+    try:
+        limit = int(request.args.get("limit", "300"))
+    except ValueError:
+        return {"ok": False, "error": "limit must be an integer"}, 400
+
+    limit = max(1, min(limit, EVENT_HISTORY_LIMIT))
+    node_id = request.args.get("node_id") or request.args.get("sensor")
+
+    return {
+        "ok": True,
+        "samples": fetch_recent_samples(limit=limit, node_id=node_id),
+        "limit": limit,
+        "node_id": node_id,
+        "sensor": node_id,
+        "total_stored": count_samples(),
+        "filtered_total": count_samples(node_id=node_id) if node_id else None,
+        "storage": {
+            "type": "sqlite",
+            "path": str(DEFAULT_DB_PATH),
+        },
+    }, 200
 
 
 @app.route("/health", methods=["GET"])
@@ -417,17 +508,19 @@ def api_info():
             "post_sensor": "/sensor",
             "legacy_post_pir": "/pir",
             "samples": "/samples",
+            "stored_samples": "/stored-samples",
             "events": "/events",
             "status": "/status",
             "health": "/health",
         },
         "example_post": {
-            "sensor": "living-room-1",
+            "node_id": "node_1",
             "timestamp_ms": 123456,
             "uptime_ms": 123456,
             "pir": 1,
             "wifi_rssi": -61,
         },
+        "accepted_id_fields": ["node_id", "sensor", "sensor_id", "device"],
     }), 200
 
 
