@@ -14,50 +14,75 @@
         <h1>Presence Monitor</h1>
         <p class="lede">Phase-1 data collection: PIR and Wi-Fi RSSI samples from ESP32 boards. PIR is used as a rough debugging signal, not final presence inference.</p>
       </div>
-      <div class="pill clear" id="connectionState">Connecting</div>
+      <div class="top-actions">
+        <a class="nav-link" href="/training">Training</a>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-pressed="false">Dark</button>
+        <div class="pill clear" id="connectionState">Connecting</div>
+      </div>
     </header>
 
-    <section class="status-band" aria-label="Current presence">
-      <div class="presence-panel">
-        <p class="label">PIR-derived presence</p>
-        <p class="value" id="homePresence">Waiting</p>
-        <p class="meta" id="homeMeta">No motion reports yet.</p>
-      </div>
-      <div class="sensor-grid" id="sensorGrid"></div>
-    </section>
+    <div class="dashboard-layout">
+      <aside class="node-column" aria-label="Node data">
+        <section class="status-band" aria-label="Current presence">
+          <div class="presence-panel">
+            <p class="label">PIR-derived presence</p>
+            <p class="value" id="homePresence">Waiting</p>
+            <p class="meta" id="homeMeta">No motion reports yet.</p>
+            <form class="timeout-form" id="timeoutForm">
+              <label for="timeoutInput">Presence timeout</label>
+              <div class="timeout-row">
+                <input id="timeoutInput" name="presence_timeout_seconds" type="number" min="5" max="3600" step="1" value="180">
+                <span>sec</span>
+                <button type="submit">Set</button>
+              </div>
+              <p class="timeout-message" id="timeoutMessage" aria-live="polite"></p>
+            </form>
+          </div>
+          <div class="sensor-grid" id="sensorGrid"></div>
+        </section>
+      </aside>
 
-    <section class="graph-section" aria-label="Presence graph">
-      <div class="section-head">
-        <h2>Presence Timeline</h2>
-        <div class="actions" id="rangeButtons">
-          <button type="button" data-minutes="5">5 min</button>
-          <button type="button" data-minutes="15">15 min</button>
-          <button type="button" data-minutes="30" class="active">30 min</button>
-          <button type="button" data-minutes="60">1 hour</button>
-        </div>
-      </div>
-      <div class="chart-shell">
-        <canvas id="motionChart" height="360"></canvas>
-      </div>
-    </section>
+      <div class="graph-column">
+        <section class="graph-section" aria-label="Presence graph">
+          <div class="section-head">
+            <div>
+              <h2>Presence Timeline</h2>
+              <p class="section-note">Solid line is PIR report. Faded line is presence hold.</p>
+            </div>
+            <div class="actions" id="rangeButtons">
+              <button type="button" data-minutes="3" class="active">3 min</button>
+              <button type="button" data-minutes="5">5 min</button>
+              <button type="button" data-minutes="15">15 min</button>
+              <button type="button" data-minutes="30">30 min</button>
+              <button type="button" data-minutes="60">1 hour</button>
+            </div>
+          </div>
+          <div class="chart-shell">
+            <canvas id="motionChart" height="360"></canvas>
+          </div>
+        </section>
 
-    <section class="graph-section" aria-label="Wi-Fi RSSI graph">
-      <div class="section-head">
-        <h2>Wi-Fi RSSI Trend</h2>
-        <span class="pill">Raw phase-1 signal</span>
+        <section class="graph-section" aria-label="Wi-Fi RSSI graph">
+          <div class="section-head">
+            <h2>Wi-Fi RSSI Trend</h2>
+            <span class="pill">Raw phase-1 signal</span>
+          </div>
+          <div class="chart-shell">
+            <canvas id="rssiChart" height="360"></canvas>
+          </div>
+        </section>
       </div>
-      <div class="chart-shell">
-        <canvas id="rssiChart" height="360"></canvas>
-      </div>
-    </section>
 
-    <section class="event-section" aria-label="Recent PIR events">
-      <div class="section-head">
-        <h2>Recent PIR Events</h2>
-        <span class="pill" id="eventCount">0 events</span>
-      </div>
-      <div class="event-list" id="eventList"></div>
-    </section>
+      <aside class="event-column" aria-label="Recent PIR events">
+        <section class="event-section">
+          <div class="section-head">
+            <h2>Recent PIR Events</h2>
+            <span class="pill" id="eventCount">0 events</span>
+          </div>
+          <div class="event-list" id="eventList"></div>
+        </section>
+      </aside>
+    </div>
   </main>
 
   <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>

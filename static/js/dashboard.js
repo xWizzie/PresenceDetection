@@ -1,17 +1,25 @@
 const appState = {
   status: null,
   events: [],
-  minutes: 30,
+  minutes: 3,
   polling: false,
+  timeoutSaving: false,
   resizeTimer: null
 };
 
 const POLL_INTERVAL_MS = 1000;
-const colors = ["#2f7d5c", "#d95c4a", "#2860a8", "#b7791f", "#0f766e"];
+const SAMPLE_FETCH_RATE_PER_SECOND = 12;
+const THEME_STORAGE_KEY = "presenceDashboardTheme";
+const seriesColorVars = ["--green", "--coral", "--blue", "--amber", "--teal"];
+const fallbackColors = ["#2f7d5c", "#d95c4a", "#2860a8", "#b7791f", "#0f766e"];
 
 const connectionState = document.getElementById("connectionState");
+const themeToggle = document.getElementById("themeToggle");
 const homePresence = document.getElementById("homePresence");
 const homeMeta = document.getElementById("homeMeta");
+const timeoutForm = document.getElementById("timeoutForm");
+const timeoutInput = document.getElementById("timeoutInput");
+const timeoutMessage = document.getElementById("timeoutMessage");
 const sensorGrid = document.getElementById("sensorGrid");
 const eventList = document.getElementById("eventList");
 const eventCount = document.getElementById("eventCount");
@@ -19,6 +27,59 @@ const canvas = document.getElementById("motionChart");
 const ctx = canvas.getContext("2d");
 const rssiCanvas = document.getElementById("rssiChart");
 const rssiCtx = rssiCanvas.getContext("2d");
+
+function getThemeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
+
+  return value || fallback;
+}
+
+function getSeriesColor(index) {
+  return getThemeColor(
+    seriesColorVars[index % seriesColorVars.length],
+    fallbackColors[index % fallbackColors.length]
+  );
+}
+
+function applyTheme(theme) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = nextTheme;
+  themeToggle.textContent = nextTheme === "dark" ? "Light" : "Dark";
+  themeToggle.setAttribute("aria-pressed", nextTheme === "dark" ? "true" : "false");
+}
+
+function loadThemePreference() {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function saveThemePreference(theme) {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch (_error) {
+    // Local storage can be unavailable in strict browser modes.
+  }
+}
+
+function setupThemeToggle() {
+  const storedTheme = loadThemePreference();
+  applyTheme(storedTheme || "light");
+
+  themeToggle.addEventListener("click", () => {
+    const nextTheme = document.documentElement.dataset.theme === "dark"
+      ? "light"
+      : "dark";
+    applyTheme(nextTheme);
+    saveThemePreference(nextTheme);
+    drawChart();
+    drawRssiChart();
+  });
+}
 
 function formatClock(timestamp) {
   if (!timestamp) {
@@ -72,6 +133,21 @@ async function getJSON(url) {
   return response.json();
 }
 
+async function postJSON(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || url + " returned " + response.status);
+  }
+  return payload;
+}
+
 async function refresh() {
   if (appState.polling) {
     return;
@@ -80,10 +156,10 @@ async function refresh() {
   appState.polling = true;
 
   try {
-    const limit = appState.minutes * 60;
+    const limit = Math.ceil(appState.minutes * 60 * SAMPLE_FETCH_RATE_PER_SECOND);
     const results = await Promise.all([
       getJSON("/status"),
-      getJSON("/samples?limit=" + limit)
+      getJSON("/stored-samples?limit=" + limit)
     ]);
 
     appState.status = results[0];
@@ -126,6 +202,23 @@ function renderPresence() {
   homeMeta.textContent = activeCount + " active sensor" + (activeCount === 1 ? "" : "s")
     + " / " + seenCount + " seen. Timeout "
     + appState.status.presence_timeout_seconds + "s. Polling every 1s.";
+  syncTimeoutControl(appState.status);
+}
+
+function syncTimeoutControl(status) {
+  if (!timeoutInput || !status) {
+    return;
+  }
+
+  if (status.presence_timeout_min_seconds !== undefined) {
+    timeoutInput.min = status.presence_timeout_min_seconds;
+  }
+  if (status.presence_timeout_max_seconds !== undefined) {
+    timeoutInput.max = status.presence_timeout_max_seconds;
+  }
+  if (document.activeElement !== timeoutInput && !appState.timeoutSaving) {
+    timeoutInput.value = status.presence_timeout_seconds;
+  }
 }
 
 function renderSensors() {
@@ -203,14 +296,14 @@ function drawChart() {
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   const width = Math.max(320, Math.floor(rect.width));
-  const height = Math.max(300, Math.floor(rect.height));
+  const height = Math.max(320, Math.floor(rect.height));
 
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  ctx.fillStyle = "#fbfcfc";
+  ctx.fillStyle = getThemeColor("--chart-bg", "#fbfcfc");
   ctx.fillRect(0, 0, width, height);
 
   const left = width < 560 ? 82 : 122;
@@ -224,13 +317,13 @@ function drawChart() {
   const rowHeight = sensors.length ? chartHeight / sensors.length : chartHeight;
   const timeoutMs = status
     ? status.presence_timeout_seconds * 1000
-    : 30000;
+    : 180000;
   const groupedEvents = groupEventsBySensor(events);
 
   drawGrid(width, height, left, right, top, bottom, start, now);
 
   if (!sensors.length) {
-    ctx.fillStyle = "#63736f";
+    ctx.fillStyle = getThemeColor("--chart-label", "#63736f");
     ctx.font = "700 16px Segoe UI, Arial, sans-serif";
     ctx.fillText("Waiting for sensor data", left, top + 34);
     return;
@@ -239,20 +332,20 @@ function drawChart() {
   sensors.forEach((sensor, index) => {
     const y = top + index * rowHeight;
     const mid = y + rowHeight / 2;
-    const color = colors[index % colors.length];
+    const color = getSeriesColor(index);
 
-    ctx.fillStyle = "#15211f";
+    ctx.fillStyle = getThemeColor("--chart-text", "#15211f");
     ctx.font = "700 12px Segoe UI, Arial, sans-serif";
     ctx.fillText(sensor, 12, mid + 4, left - 20);
 
-    ctx.strokeStyle = "#d8e1de";
+    ctx.strokeStyle = getThemeColor("--chart-grid", "#d8e1de");
     ctx.beginPath();
     ctx.moveTo(left, y + rowHeight);
     ctx.lineTo(width - right, y + rowHeight);
     ctx.stroke();
 
     const sensorEvents = groupedEvents.get(sensor) || [];
-    drawPresenceLine({
+    drawSensorTimeline({
       sensorEvents,
       color,
       start,
@@ -265,7 +358,7 @@ function drawChart() {
     });
   });
 
-  ctx.fillStyle = "#63736f";
+  ctx.fillStyle = getThemeColor("--chart-label", "#63736f");
   ctx.font = "12px Segoe UI, Arial, sans-serif";
   ctx.fillText(appState.minutes + " min ago", left, height - 15);
   ctx.textAlign = "right";
@@ -280,14 +373,14 @@ function drawRssiChart() {
   const rect = rssiCanvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   const width = Math.max(320, Math.floor(rect.width));
-  const height = Math.max(300, Math.floor(rect.height));
+  const height = Math.max(320, Math.floor(rect.height));
 
   rssiCanvas.width = Math.floor(width * dpr);
   rssiCanvas.height = Math.floor(height * dpr);
   rssiCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   rssiCtx.clearRect(0, 0, width, height);
 
-  rssiCtx.fillStyle = "#fbfcfc";
+  rssiCtx.fillStyle = getThemeColor("--chart-bg", "#fbfcfc");
   rssiCtx.fillRect(0, 0, width, height);
 
   const left = width < 560 ? 54 : 72;
@@ -298,9 +391,8 @@ function drawRssiChart() {
   const chartHeight = height - top - bottom;
   const now = Date.now();
   const start = now - appState.minutes * 60 * 1000;
-  const minRssi = -95;
-  const maxRssi = -30;
   const groupedSamples = groupEventsBySensor(samples);
+  const rssiScale = getRssiScale(sensors, groupedSamples, start, now);
 
   drawRssiGrid({
     width,
@@ -311,19 +403,20 @@ function drawRssiChart() {
     bottom,
     start,
     now,
-    minRssi,
-    maxRssi
+    minRssi: rssiScale.min,
+    maxRssi: rssiScale.max,
+    rssiLines: rssiScale.lines
   });
 
   if (!sensors.length) {
-    rssiCtx.fillStyle = "#63736f";
+    rssiCtx.fillStyle = getThemeColor("--chart-label", "#63736f");
     rssiCtx.font = "700 16px Segoe UI, Arial, sans-serif";
     rssiCtx.fillText("Waiting for RSSI samples", left, top + 34);
     return;
   }
 
   sensors.forEach((sensor, index) => {
-    const color = colors[index % colors.length];
+    const color = getSeriesColor(index);
     const points = (groupedSamples.get(sensor) || [])
       .map(sample => ({
         time: sample.time,
@@ -337,7 +430,7 @@ function drawRssiChart() {
       ))
       .map(point => ({
         x: left + ((point.time - start) / (now - start)) * chartWidth,
-        y: top + ((maxRssi - point.value) / (maxRssi - minRssi)) * chartHeight,
+        y: top + ((rssiScale.max - point.value) / (rssiScale.max - rssiScale.min)) * chartHeight,
         value: point.value
       }));
 
@@ -363,16 +456,16 @@ function drawRssiGrid(options) {
     start,
     now,
     minRssi,
-    maxRssi
+    maxRssi,
+    rssiLines
   } = options;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
-  const rssiLines = [-90, -80, -70, -60, -50, -40];
   const timeLines = 6;
 
-  rssiCtx.strokeStyle = "#e5ece9";
+  rssiCtx.strokeStyle = getThemeColor("--chart-grid", "#e5ece9");
   rssiCtx.lineWidth = 1;
-  rssiCtx.fillStyle = "#63736f";
+  rssiCtx.fillStyle = getThemeColor("--chart-label", "#63736f");
   rssiCtx.font = "11px Segoe UI, Arial, sans-serif";
 
   rssiLines.forEach(value => {
@@ -401,6 +494,58 @@ function drawRssiGrid(options) {
   rssiCtx.textAlign = "right";
   rssiCtx.fillText("now", width - right, height - 15);
   rssiCtx.textAlign = "left";
+}
+
+function getRssiScale(sensors, groupedSamples, start, now) {
+  const values = [];
+
+  sensors.forEach(sensor => {
+    (groupedSamples.get(sensor) || []).forEach(sample => {
+      const value = getWifiRssi(sample);
+      if (
+        value !== null
+        && value !== undefined
+        && sample.time >= start
+        && sample.time <= now
+      ) {
+        values.push(value);
+      }
+    });
+  });
+
+  if (!values.length) {
+    return {
+      min: -95,
+      max: -30,
+      lines: [-90, -80, -70, -60, -50, -40]
+    };
+  }
+
+  const observedMin = Math.min(...values);
+  const observedMax = Math.max(...values);
+  const observedSpan = observedMax - observedMin;
+  const targetSpan = Math.max(12, observedSpan + 8);
+  const center = (observedMin + observedMax) / 2;
+  const min = Math.floor(center - targetSpan / 2);
+  const max = Math.ceil(center + targetSpan / 2);
+
+  return {
+    min,
+    max,
+    lines: buildRssiGridLines(min, max)
+  };
+}
+
+function buildRssiGridLines(minRssi, maxRssi) {
+  const lineCount = 5;
+  const step = (maxRssi - minRssi) / (lineCount - 1);
+  const lines = [];
+
+  for (let index = 0; index < lineCount; index += 1) {
+    lines.push(Math.round(maxRssi - step * index));
+  }
+
+  return lines;
 }
 
 function drawRssiLine(points, color) {
@@ -453,7 +598,7 @@ function groupEventsBySensor(events) {
   return grouped;
 }
 
-function drawPresenceLine(options) {
+function drawSensorTimeline(options) {
   const {
     sensorEvents,
     color,
@@ -467,27 +612,77 @@ function drawPresenceLine(options) {
   } = options;
 
   const rowBottom = rowTop + rowHeight;
-  const highY = rowTop + rowHeight * 0.18;
-  const lowY = rowBottom - rowHeight * 0.18;
+  const highY = rowTop + rowHeight * 0.34;
+  const lowY = rowBottom - rowHeight * 0.34;
   const sampleCount = Math.max(80, Math.floor(chartWidth / 5));
-  const points = [];
+  const pirTransitions = getPirTransitionEvents(sensorEvents, start, now);
+
+  const presencePoints = buildSignalPoints({
+    start,
+    now,
+    left,
+    chartWidth,
+    highY,
+    lowY,
+    sampleCount,
+    extraTimes: getPresenceTransitionTimes(sensorEvents, start, now, timeoutMs),
+    isActiveAt: time => isSensorPresentAt(sensorEvents, time, timeoutMs)
+  });
+  const pirPoints = buildSignalPoints({
+    start,
+    now,
+    left,
+    chartWidth,
+    highY,
+    lowY,
+    sampleCount,
+    extraTimes: pirTransitions.map(event => event.time),
+    isActiveAt: time => isPirReportingAt(sensorEvents, time)
+  });
+
+  drawSignalStroke(presencePoints, color, { alpha: 0.22, width: 7 });
+  drawSignalStroke(pirPoints, color, { alpha: 1, width: 3 });
+  drawEventDots(pirTransitions, start, now, left, chartWidth, lowY, highY, color);
+}
+
+function buildSignalPoints(options) {
+  const {
+    start,
+    now,
+    left,
+    chartWidth,
+    highY,
+    lowY,
+    sampleCount,
+    extraTimes = [],
+    isActiveAt
+  } = options;
+  const times = [];
 
   for (let i = 0; i <= sampleCount; i += 1) {
     const ratio = i / sampleCount;
-    const time = start + (now - start) * ratio;
-    const active = isSensorPresentAt(sensorEvents, time, timeoutMs);
-    const value = active ? 0.82 : 0.06;
-
-    points.push({
-      x: left + chartWidth * ratio,
-      y: lowY - (lowY - highY) * value,
-      active
-    });
+    times.push(start + (now - start) * ratio);
   }
 
-  drawSignalFill(points, rowBottom, color);
-  drawSignalStroke(points, color);
-  drawEventDots(sensorEvents, start, now, left, chartWidth, lowY, highY, color);
+  extraTimes.forEach(time => {
+    if (time >= start && time <= now) {
+      times.push(time);
+    }
+  });
+
+  return [...new Set(times)]
+    .sort((first, second) => first - second)
+    .map(time => {
+      const ratio = (time - start) / (now - start);
+      const active = isActiveAt(time);
+      const value = active ? 1 : 0;
+
+      return {
+        x: left + chartWidth * ratio,
+        y: lowY - (lowY - highY) * value,
+        active
+      };
+    });
 }
 
 function isSensorPresentAt(sensorEvents, time, timeoutMs) {
@@ -508,30 +703,33 @@ function isSensorPresentAt(sensorEvents, time, timeoutMs) {
   return false;
 }
 
-function drawSignalFill(points, rowBottom, color) {
+function isPirReportingAt(sensorEvents, time) {
+  for (let i = sensorEvents.length - 1; i >= 0; i -= 1) {
+    const event = sensorEvents[i];
+
+    if (event.time > time) {
+      continue;
+    }
+
+    const pir = getPirValue(event);
+    if (pir === null || pir === undefined) {
+      continue;
+    }
+
+    return Boolean(pir);
+  }
+
+  return false;
+}
+
+function drawSignalStroke(points, color, options = {}) {
   if (!points.length) {
     return;
   }
 
   ctx.save();
-  ctx.globalAlpha = 0.12;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, rowBottom - 8);
-  ctx.lineTo(points[0].x, points[0].y);
-  drawStepSegments(points);
-  ctx.lineTo(points[points.length - 1].x, rowBottom - 8);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawSignalStroke(points, color) {
-  if (!points.length) {
-    return;
-  }
-
-  ctx.lineWidth = 3;
+  ctx.globalAlpha = options.alpha === undefined ? 1 : options.alpha;
+  ctx.lineWidth = options.width || 3;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.strokeStyle = color;
@@ -539,6 +737,7 @@ function drawSignalStroke(points, color) {
   ctx.moveTo(points[0].x, points[0].y);
   drawStepSegments(points);
   ctx.stroke();
+  ctx.restore();
 }
 
 function drawStepSegments(points) {
@@ -551,31 +750,76 @@ function drawStepSegments(points) {
   }
 }
 
-function drawEventDots(sensorEvents, start, now, left, chartWidth, lowY, highY, color) {
+function drawEventDots(transitionEvents, start, now, left, chartWidth, lowY, highY, color) {
+  transitionEvents.forEach(event => {
+    const x = left + ((event.time - start) / (now - start)) * chartWidth;
+    const pir = getPirValue(event);
+    const y = pir ? highY : lowY;
+
+    ctx.fillStyle = pir ? color : getThemeColor("--chart-label", "#9aa6a3");
+    ctx.beginPath();
+    ctx.arc(x, y, pir ? 4 : 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function getPirTransitionEvents(sensorEvents, start, now) {
+  const transitions = [];
+  let previousPir;
+
   sensorEvents.forEach(event => {
-    if (event.time < start || event.time > now) {
+    const pir = getPirValue(event);
+    if (pir === null || pir === undefined) {
       return;
     }
 
-    const x = left + ((event.time - start) / (now - start)) * chartWidth;
-    const pir = getPirValue(event);
-    const hasPir = pir !== null && pir !== undefined;
-    const y = pir ? highY + 8 : lowY - 8;
+    const nextPir = Boolean(pir);
+    const changed = previousPir === undefined || nextPir !== previousPir;
+    previousPir = nextPir;
 
-    ctx.fillStyle = pir ? color : "#9aa6a3";
-    ctx.beginPath();
-    ctx.arc(x, y, pir ? 4 : hasPir ? 3 : 2, 0, Math.PI * 2);
-    ctx.fill();
+    if (!changed || event.time < start || event.time > now) {
+      return;
+    }
+
+    transitions.push({
+      ...event,
+      pir: nextPir,
+      motion: nextPir
+    });
   });
+
+  return transitions;
+}
+
+function getPresenceTransitionTimes(sensorEvents, start, now, timeoutMs) {
+  const times = [];
+
+  sensorEvents.forEach(event => {
+    if (!getPirValue(event)) {
+      return;
+    }
+
+    const activeAt = event.time;
+    const clearAt = event.time + timeoutMs;
+
+    if (activeAt >= start && activeAt <= now) {
+      times.push(activeAt);
+    }
+    if (clearAt >= start && clearAt <= now) {
+      times.push(clearAt);
+    }
+  });
+
+  return times;
 }
 
 function drawGrid(width, height, left, right, top, bottom, start, now) {
   const chartWidth = width - left - right;
   const gridCount = 6;
 
-  ctx.strokeStyle = "#e5ece9";
+  ctx.strokeStyle = getThemeColor("--chart-grid", "#e5ece9");
   ctx.lineWidth = 1;
-  ctx.fillStyle = "#63736f";
+  ctx.fillStyle = getThemeColor("--chart-label", "#63736f");
   ctx.font = "11px Segoe UI, Arial, sans-serif";
 
   for (let i = 0; i <= gridCount; i += 1) {
@@ -605,6 +849,41 @@ document.getElementById("rangeButtons").addEventListener("click", event => {
   refresh();
 });
 
+timeoutForm.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const value = Number(timeoutInput.value);
+  const min = Number(timeoutInput.min || 5);
+  const max = Number(timeoutInput.max || 3600);
+
+  if (!Number.isInteger(value) || value < min || value > max) {
+    timeoutMessage.textContent = "Use " + min + "-" + max + " seconds.";
+    return;
+  }
+
+  appState.timeoutSaving = true;
+  timeoutMessage.textContent = "Saving...";
+
+  try {
+    const payload = await postJSON("/settings", {
+      presence_timeout_seconds: value
+    });
+
+    if (appState.status) {
+      appState.status.presence_timeout_seconds = payload.presence_timeout_seconds;
+      appState.status.presence_timeout_min_seconds = payload.presence_timeout_min_seconds;
+      appState.status.presence_timeout_max_seconds = payload.presence_timeout_max_seconds;
+    }
+    timeoutMessage.textContent = "Saved.";
+    render();
+    refresh();
+  } catch (error) {
+    timeoutMessage.textContent = error.message;
+  } finally {
+    appState.timeoutSaving = false;
+  }
+});
+
 window.addEventListener("resize", () => {
   window.clearTimeout(appState.resizeTimer);
   appState.resizeTimer = window.setTimeout(() => {
@@ -613,4 +892,5 @@ window.addEventListener("resize", () => {
   }, 120);
 });
 
+setupThemeToggle();
 startPolling();

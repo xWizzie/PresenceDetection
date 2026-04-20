@@ -9,14 +9,14 @@ The goal is not final presence detection yet. Phase 1 collects clean time-series
 - Receives ESP32 node samples over HTTP
 - Tracks latest PIR and Wi-Fi RSSI values per node
 - Keeps recent samples in memory for the dashboard
-- Stores accepted samples in SQLite at `data/raw/sensor_samples.sqlite3`
-- Best-effort debug log append to `data/raw/sensor_samples.jsonl`
+- Stores a rolling live sample buffer in SQLite at `data/raw/sensor_samples.sqlite3`
 - Shows live PIR-derived presence and Wi-Fi RSSI trends
+- Provides a training-label page for manual room-state labels
 
 ## What Phase 1 Does Not Do
 
-- No model training
-- No final occupancy inference
+- No deep learning
+- No final production-grade occupancy inference
 - No CSI processing
 - No BLE tracking
 - No Docker, Redis, message brokers, or background workers
@@ -117,6 +117,20 @@ The dashboard shows:
 - Wi-Fi RSSI trend per ESP32
 - Recent PIR events
 
+Training labels page:
+
+```text
+http://YOUR_PC_IP_ADDRESS:5000/training
+```
+
+Use this page while collecting model data. The label buttons create time ranges in SQLite:
+
+- `empty`: out of room
+- `still`: present and sitting still
+- `moving`: moving in room
+
+Use the collection switch or `Pause labeling` when the current room state should not be used for training. Keep collection off while transitioning between states, such as walking into the room or standing up from sitting, then start the correct label once the state is stable.
+
 ## API
 
 Raw status:
@@ -124,6 +138,17 @@ Raw status:
 ```text
 GET /status
 ```
+
+In `/status`, each sensor's `present` value is PIR-derived. It is `true` when that sensor has reported PIR motion within the current presence timeout, which defaults to 180 seconds. `home_present` is `true` if any sensor is currently `present`. This is only a phase-1 debugging signal, not final occupancy inference.
+
+Adjust the presence timeout:
+
+```text
+GET /settings
+POST /settings
+```
+
+`POST /settings` accepts `presence_timeout_seconds` from `5` to `3600`.
 
 Recent raw samples:
 
@@ -141,6 +166,16 @@ GET /stored-samples?limit=100
 GET /stored-samples?node_id=node_1
 ```
 
+Training label state:
+
+```text
+GET /training-label
+POST /training-label
+```
+
+`POST /training-label` accepts `empty`, `still`, `moving`, or an empty label to pause.
+Responses include `collecting: true` while a training label interval is open.
+
 Compatibility event endpoint:
 
 ```text
@@ -152,6 +187,26 @@ Endpoint details:
 ```text
 GET /api
 ```
+
+Live model state:
+
+```text
+GET /state
+GET /state?window_seconds=5&min_samples=3
+```
+
+`/state` loads the trained model from `models/presence_model.pkl`, builds the latest RSSI feature window per node from SQLite, and returns a predicted state plus confidence when available. If no model has been trained yet, it returns a clear error instead of crashing.
+
+## Storage Retention
+
+The raw `sensor_samples` table is a rolling live buffer, not a permanent archive. It keeps enough data for the dashboard and live inference:
+
+- dashboard max window: `60` minutes
+- expected dashboard fetch rate: `12` samples per second
+- stored sample cap: `50000`
+- stored sample max age: `7200` seconds
+
+Old unlabeled rows are pruned periodically after new sensor samples arrive. Manual training label intervals are stored separately in `training_labels`, and any sensor samples that fall inside a training label interval are protected from the live-sample retention rule.
 
 ## Build A Feature Dataset
 
@@ -187,12 +242,57 @@ py build_dataset.py --node-id node_1
 py build_dataset.py --window-seconds 3 --step-seconds 1
 py build_dataset.py --time-field timestamp_ms
 py build_dataset.py --output data/datasets/node_1_features.csv
+py build_dataset.py --label-source training
 ```
+
+Use `--label-source training` after collecting labels on `/training`. This replaces PIR-derived labels with the manual label interval covering each feature window midpoint. Windows outside labeled intervals become `unlabeled`.
 
 CSV columns include:
 
 ```text
 node_id, window_start, window_end, sample_count, rssi_mean, rssi_std, rssi_min, rssi_max, rssi_delta, pir_sum, pir_any, label
+```
+
+## Train The Baseline Model
+
+Train a simple RandomForest baseline from the feature CSV:
+
+```powershell
+py train.py
+```
+
+Default model output:
+
+```text
+models/presence_model.pkl
+```
+
+Useful options:
+
+```powershell
+py train.py --input data/datasets/features.csv
+py train.py --output models/presence_model.pkl
+```
+
+Training uses RSSI/window features and ignores `unlabeled` rows. It supports `empty`, `still`, and `moving` labels when they exist in the CSV.
+
+Label honesty:
+
+- `moving` may be PIR-derived and is useful as a rough early label.
+- PIR inactivity is not proof of `empty`.
+- `still` needs deliberately collected or manually curated labels.
+- Treat this as a first baseline classifier, not a reliable occupancy model yet.
+
+Run live inference after training:
+
+```powershell
+py server.py
+```
+
+Then call:
+
+```text
+http://YOUR_PC_IP_ADDRESS:5000/state
 ```
 
 ## Repo Layout
@@ -203,7 +303,10 @@ PresenceDetection/
   storage.py
   features.py
   build_dataset.py
+  train.py
+  model.py
   requirements.txt
+  models/
   templates/
   static/
   esp32/
@@ -222,4 +325,4 @@ PresenceDetection/
 3. Collect occupied and empty sessions.
 4. Build feature datasets with `build_dataset.py`.
 5. Label sessions in `data/labeled/`.
-6. Train a simple model after enough data exists.
+6. Collect better `still` and `empty` labels for model quality.

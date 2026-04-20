@@ -1,31 +1,49 @@
-import json
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 from flask import Flask, jsonify, render_template, request
 
+from features import extract_window_features, group_samples_by_node
+from model import DEFAULT_MODEL_PATH, ModelNotFoundError, predict_state
 from storage import (
     DEFAULT_DB_PATH,
-    PROJECT_ROOT,
     count_samples,
+    fetch_training_labels,
     fetch_recent_samples,
+    get_active_training_label,
     init_storage,
     insert_sensor_sample,
+    prune_sensor_samples,
+    start_training_label,
+    stop_active_training_label,
 )
 
 app = Flask(__name__)
 
-PRESENCE_TIMEOUT_SECONDS = 30
+DEFAULT_PRESENCE_TIMEOUT_SECONDS = 180
+MIN_PRESENCE_TIMEOUT_SECONDS = 5
+MAX_PRESENCE_TIMEOUT_SECONDS = 3600
 EXPECTED_NODES = ("node_1", "node_2", "node_3")
-EVENT_HISTORY_LIMIT = 1000
+MAX_DASHBOARD_WINDOW_MINUTES = 60
+DASHBOARD_SAMPLE_RATE_PER_SECOND = 12
+EVENT_HISTORY_LIMIT = 50000
 STATUS_HISTORY_LIMIT = 60
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-RAW_SAMPLE_LOG = RAW_DATA_DIR / "sensor_samples.jsonl"
-
+STATE_SAMPLE_LIMIT = 3000
+STATE_WINDOW_SECONDS = 5.0
+STATE_MIN_SAMPLES = 3
+SENSOR_SAMPLE_RETENTION_SECONDS = 2 * 60 * 60
+SENSOR_SAMPLE_PRUNE_INTERVAL = 100
+TRAINING_LABELS = {
+    "empty": "Out of room",
+    "still": "Sitting still",
+    "moving": "Moving in room",
+}
 sensor_state = {}
 last_pir_motion_time = {}
 sensor_events = []
 samples_by_sensor = {}
+presence_timeout_seconds = DEFAULT_PRESENCE_TIMEOUT_SECONDS
+samples_since_prune = 0
 lock = Lock()
 
 init_storage()
@@ -106,16 +124,25 @@ def is_present(sensor_name: str) -> bool:
     last_seen = last_pir_motion_time.get(sensor_name)
     if last_seen is None:
         return False
-    return utc_now() - last_seen < timedelta(seconds=PRESENCE_TIMEOUT_SECONDS)
+    return utc_now() - last_seen < timedelta(seconds=presence_timeout_seconds)
 
 
-def append_raw_sample(sample):
-    try:
-        RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with RAW_SAMPLE_LOG.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(sample, separators=(",", ":")) + "\n")
-    except Exception as error:
-        print(f"Warning: could not append JSONL sample: {error}")
+def presence_timeout_payload():
+    return {
+        "presence_timeout_seconds": presence_timeout_seconds,
+        "presence_timeout_min_seconds": MIN_PRESENCE_TIMEOUT_SECONDS,
+        "presence_timeout_max_seconds": MAX_PRESENCE_TIMEOUT_SECONDS,
+    }
+
+
+def storage_retention_payload():
+    return {
+        "stored_sample_limit": EVENT_HISTORY_LIMIT,
+        "stored_sample_max_age_seconds": SENSOR_SAMPLE_RETENTION_SECONDS,
+        "dashboard_max_window_minutes": MAX_DASHBOARD_WINDOW_MINUTES,
+        "dashboard_sample_rate_per_second": DASHBOARD_SAMPLE_RATE_PER_SECOND,
+        "training_samples_protected": True,
+    }
 
 
 def normalize_sensor_payload(data, source_endpoint):
@@ -168,6 +195,20 @@ def append_sample_to_memory(event):
     sensor_samples = samples_by_sensor.setdefault(event["sensor"], [])
     sensor_samples.append(event)
     del sensor_samples[:-EVENT_HISTORY_LIMIT]
+
+
+def prune_stored_samples_if_needed(force=False):
+    global samples_since_prune
+
+    samples_since_prune += 1
+    if not force and samples_since_prune < SENSOR_SAMPLE_PRUNE_INTERVAL:
+        return 0
+
+    samples_since_prune = 0
+    return prune_sensor_samples(
+        max_samples=EVENT_HISTORY_LIMIT,
+        max_age_seconds=SENSOR_SAMPLE_RETENTION_SECONDS,
+    )
 
 
 def summarize_sensor_history(sensor):
@@ -292,13 +333,15 @@ def ingest_sensor_sample(data, source_endpoint):
         sample_id = insert_sensor_sample(event)
         event["sample_id"] = sample_id
         append_sample_to_memory(event)
-        append_raw_sample(event)
+        pruned_samples = prune_stored_samples_if_needed()
 
     print(
         f"[{received_at}] sensor={sensor} pir={pir} "
         f"wifi_rssi={sample['wifi_rssi']} uptime_ms={sample['uptime_ms']} "
         f"present={present} home_present={home_present}"
     )
+    if pruned_samples:
+        print(f"Pruned {pruned_samples} old stored samples")
 
     return {
         "ok": True,
@@ -309,7 +352,7 @@ def ingest_sensor_sample(data, source_endpoint):
         "wifi_rssi": sample["wifi_rssi"],
         "present": present,
         "home_present": home_present,
-        "presence_timeout_seconds": PRESENCE_TIMEOUT_SECONDS,
+        "presence_timeout_seconds": presence_timeout_seconds,
         "sample_id": sample_id,
     }, 200
 
@@ -351,17 +394,22 @@ def build_status_payload(now: datetime):
     return {
         "ok": True,
         "home_present": any(sensor["present"] for sensor in sensors.values()),
-        "presence_timeout_seconds": PRESENCE_TIMEOUT_SECONDS,
         "server_time": format_timestamp(now),
         "sensors": sensors,
         "nodes": sensors,
         "sample_history_limit": EVENT_HISTORY_LIMIT,
+        **presence_timeout_payload(),
     }
 
 
 @app.route("/", methods=["GET"])
 def home():
     return render_template("dashboard.html")
+
+
+@app.route("/training", methods=["GET"])
+def training():
+    return render_template("training.html")
 
 
 @app.route("/sensor", methods=["POST"])
@@ -419,6 +467,112 @@ def status():
     with lock:
         payload = build_status_payload(now)
 
+    return jsonify(payload), 200
+
+
+@app.route("/settings", methods=["GET"])
+def settings():
+    with lock:
+        payload = {
+            "ok": True,
+            **presence_timeout_payload(),
+        }
+
+    return jsonify(payload), 200
+
+
+@app.route("/settings", methods=["POST"])
+def update_settings():
+    global presence_timeout_seconds
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "JSON payload must be an object"}, 400
+
+    timeout_value = data.get("presence_timeout_seconds")
+    parsed_timeout = parse_optional_number(timeout_value)
+    if parsed_timeout is None or not float(parsed_timeout).is_integer():
+        return {
+            "ok": False,
+            "error": "presence_timeout_seconds must be an integer",
+        }, 400
+
+    parsed_timeout = int(parsed_timeout)
+    if not (
+        MIN_PRESENCE_TIMEOUT_SECONDS
+        <= parsed_timeout
+        <= MAX_PRESENCE_TIMEOUT_SECONDS
+    ):
+        return {
+            "ok": False,
+            "error": (
+                "presence_timeout_seconds must be between "
+                f"{MIN_PRESENCE_TIMEOUT_SECONDS} and "
+                f"{MAX_PRESENCE_TIMEOUT_SECONDS}"
+            ),
+        }, 400
+
+    with lock:
+        presence_timeout_seconds = parsed_timeout
+        payload = {
+            "ok": True,
+            **presence_timeout_payload(),
+        }
+
+    return jsonify(payload), 200
+
+
+def training_label_payload():
+    active = get_active_training_label()
+    history = fetch_training_labels()
+    return {
+        "ok": True,
+        "collecting": active is not None,
+        "active": active,
+        "labels": [
+            {
+                "label": label,
+                "label_name": label_name,
+            }
+            for label, label_name in TRAINING_LABELS.items()
+        ],
+        "history": history[-20:],
+    }
+
+
+@app.route("/training-label", methods=["GET"])
+def training_label():
+    return jsonify(training_label_payload()), 200
+
+
+@app.route("/training-label", methods=["POST"])
+def update_training_label():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "JSON payload must be an object"}, 400
+
+    requested_label = data.get("label")
+    now = format_timestamp(utc_now())
+
+    if requested_label in (None, "", "none", "stop"):
+        stopped = stop_active_training_label(now)
+        payload = training_label_payload()
+        payload["stopped"] = stopped
+        return jsonify(payload), 200
+
+    if requested_label not in TRAINING_LABELS:
+        return {
+            "ok": False,
+            "error": "label must be one of: " + ", ".join(TRAINING_LABELS),
+        }, 400
+
+    active = start_training_label(
+        label=requested_label,
+        label_name=TRAINING_LABELS[requested_label],
+        started_at=now,
+    )
+    payload = training_label_payload()
+    payload["active"] = active
     return jsonify(payload), 200
 
 
@@ -495,8 +649,172 @@ def stored_samples_payload():
         "storage": {
             "type": "sqlite",
             "path": str(DEFAULT_DB_PATH),
+            "retention": storage_retention_payload(),
         },
     }, 200
+
+
+def parse_float_query(name, default, min_value=None):
+    raw_value = request.args.get(name)
+    if raw_value is None:
+        return default, None
+
+    parsed = parse_optional_number(raw_value)
+    if parsed is None:
+        return None, f"{name} must be a number"
+
+    if min_value is not None and parsed < min_value:
+        return None, f"{name} must be at least {min_value}"
+
+    return float(parsed), None
+
+
+def parse_int_query(name, default, min_value=None, max_value=None):
+    raw_value = request.args.get(name)
+    if raw_value is None:
+        return default, None
+
+    parsed = parse_optional_number(raw_value)
+    if parsed is None or not float(parsed).is_integer():
+        return None, f"{name} must be an integer"
+
+    parsed = int(parsed)
+    if min_value is not None and parsed < min_value:
+        return None, f"{name} must be at least {min_value}"
+    if max_value is not None and parsed > max_value:
+        return None, f"{name} must be at most {max_value}"
+
+    return parsed, None
+
+
+def latest_feature_rows_by_node(samples, window_seconds, min_samples):
+    grouped = group_samples_by_node(samples, time_field="received_at")
+    feature_rows = {}
+    skipped = {}
+
+    for node_id, node_samples in grouped.items():
+        if not node_samples:
+            skipped[node_id] = "no samples"
+            continue
+
+        window_end = node_samples[-1]["_time_seconds"]
+        window_start = window_end - window_seconds
+        window_samples = [
+            sample
+            for sample in node_samples
+            if window_start <= sample["_time_seconds"] <= window_end
+        ]
+        row = extract_window_features(
+            node_id=node_id,
+            window_start=window_start,
+            window_end=window_end,
+            samples=window_samples,
+            min_samples=min_samples,
+            time_field="received_at",
+            inactive_label="empty",
+            missing_pir_label="unlabeled",
+        )
+
+        if row:
+            feature_rows[node_id] = row
+        else:
+            skipped[node_id] = "not enough RSSI samples in latest window"
+
+    return feature_rows, skipped
+
+
+def state_payload():
+    window_seconds, window_error = parse_float_query(
+        "window_seconds",
+        STATE_WINDOW_SECONDS,
+        min_value=0.1,
+    )
+    min_samples, min_samples_error = parse_int_query(
+        "min_samples",
+        STATE_MIN_SAMPLES,
+        min_value=1,
+    )
+    limit, limit_error = parse_int_query(
+        "limit",
+        STATE_SAMPLE_LIMIT,
+        min_value=1,
+        max_value=EVENT_HISTORY_LIMIT,
+    )
+    errors = [
+        error
+        for error in (window_error, min_samples_error, limit_error)
+        if error
+    ]
+    if errors:
+        return {"ok": False, "error": "; ".join(errors)}, 400
+
+    if not DEFAULT_MODEL_PATH.exists():
+        return {
+            "ok": False,
+            "model_loaded": False,
+            "error": "No trained model found. Run train.py first.",
+            "model_path": str(DEFAULT_MODEL_PATH),
+        }, 503
+
+    samples = fetch_recent_samples(limit=limit)
+    feature_rows, skipped = latest_feature_rows_by_node(
+        samples,
+        window_seconds=window_seconds,
+        min_samples=min_samples,
+    )
+    states = {}
+
+    try:
+        for node_id, row in feature_rows.items():
+            prediction = predict_state(row, model_path=DEFAULT_MODEL_PATH)
+            states[node_id] = {
+                "state": prediction["state"],
+                "confidence": (
+                    round(prediction["confidence"], 4)
+                    if prediction["confidence"] is not None
+                    else None
+                ),
+                "window_start": row["window_start"],
+                "window_end": row["window_end"],
+                "sample_count": row["sample_count"],
+                "rssi_mean": row["rssi_mean"],
+            }
+    except ModelNotFoundError:
+        return {
+            "ok": False,
+            "model_loaded": False,
+            "error": "No trained model found. Run train.py first.",
+            "model_path": str(DEFAULT_MODEL_PATH),
+        }, 503
+    except Exception as error:
+        return {
+            "ok": False,
+            "model_loaded": False,
+            "error": f"Could not run model inference: {error}",
+            "model_path": str(DEFAULT_MODEL_PATH),
+        }, 500
+
+    return {
+        "ok": True,
+        "model_loaded": True,
+        "model_path": str(DEFAULT_MODEL_PATH),
+        "window_seconds": window_seconds,
+        "min_samples": min_samples,
+        "sample_limit": limit,
+        "states": states,
+        "nodes": states,
+        "skipped": skipped,
+        "label_note": (
+            "This is a baseline classifier. moving may be PIR-derived; "
+            "empty/still labels need careful collection."
+        ),
+    }, 200
+
+
+@app.route("/state", methods=["GET"])
+def state():
+    payload, status_code = state_payload()
+    return jsonify(payload), status_code
 
 
 @app.route("/health", methods=["GET"])
@@ -511,14 +829,19 @@ def api_info():
         "message": "Presence sensing server is running",
         "endpoints": {
             "dashboard": "/",
+            "training": "/training",
             "post_sensor": "/sensor",
             "legacy_post_pir": "/pir",
             "samples": "/samples",
             "stored_samples": "/stored-samples",
             "events": "/events",
             "status": "/status",
+            "state": "/state",
+            "settings": "/settings",
+            "training_label": "/training-label",
             "health": "/health",
         },
+        "storage_retention": storage_retention_payload(),
         "example_post": {
             "node_id": "node_1",
             "timestamp_ms": 123456,

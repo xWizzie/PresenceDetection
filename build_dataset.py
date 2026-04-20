@@ -1,9 +1,16 @@
 import argparse
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 
-from features import build_feature_rows
-from storage import DEFAULT_DB_PATH, PROJECT_ROOT, fetch_samples, init_storage
+from features import build_feature_rows, parse_received_at
+from storage import (
+    DEFAULT_DB_PATH,
+    PROJECT_ROOT,
+    fetch_samples,
+    fetch_training_labels,
+    init_storage,
+)
 
 
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "datasets" / "features.csv"
@@ -82,6 +89,12 @@ def parse_args():
         default="unlabeled",
         help="Label when a window has RSSI but no PIR values.",
     )
+    parser.add_argument(
+        "--label-source",
+        choices=("pir", "training"),
+        default="pir",
+        help="Use PIR-derived labels or manual labels from /training.",
+    )
     return parser.parse_args()
 
 
@@ -92,6 +105,49 @@ def validate_args(args):
         raise SystemExit("--step-seconds must be greater than 0")
     if args.min_samples <= 0:
         raise SystemExit("--min-samples must be greater than 0")
+    if args.label_source == "training" and args.time_field != "received_at":
+        raise SystemExit("--label-source training requires --time-field received_at")
+
+
+def training_label_intervals():
+    now_seconds = datetime.now(timezone.utc).timestamp()
+    intervals = []
+
+    for label in fetch_training_labels():
+        start = parse_received_at(label["started_at"])
+        end = parse_received_at(label["ended_at"]) if label["ended_at"] else now_seconds
+
+        if start is None or end is None or end <= start:
+            continue
+
+        intervals.append({
+            "start": start,
+            "end": end,
+            "label": label["label"],
+        })
+
+    return intervals
+
+
+def apply_training_labels(rows):
+    intervals = training_label_intervals()
+
+    for row in rows:
+        window_start = parse_received_at(row["window_start"])
+        window_end = parse_received_at(row["window_end"])
+        row["label"] = "unlabeled"
+
+        if window_start is None or window_end is None:
+            continue
+
+        midpoint = (window_start + window_end) / 2
+
+        for interval in intervals:
+            if interval["start"] <= midpoint <= interval["end"]:
+                row["label"] = interval["label"]
+                break
+
+    return rows
 
 
 def write_csv(rows, output_path):
@@ -118,10 +174,14 @@ def main():
         inactive_label=args.inactive_label,
         missing_pir_label=args.missing_pir_label,
     )
+    if args.label_source == "training":
+        rows = apply_training_labels(rows)
+
     write_csv(rows, args.output)
 
     print(f"Read samples: {len(samples)}")
     print(f"Wrote rows: {len(rows)}")
+    print(f"Label source: {args.label_source}")
     print(f"Output: {args.output}")
 
 
