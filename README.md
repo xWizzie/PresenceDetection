@@ -38,6 +38,14 @@ The server listens on `0.0.0.0:5000`, so an ESP32 on the same Wi-Fi network can 
 http://YOUR_PC_IP_ADDRESS:5000/sensor
 ```
 
+On the current LAN, the dashboard URL should look like:
+
+```text
+http://192.168.1.9:5000/
+```
+
+If a phone cannot open it, check that the phone is on the same Wi-Fi network, not mobile data or a guest/client-isolated network. If the URL still does not load, allow Python through Windows Firewall for private networks, or add an inbound TCP rule for port `5000`.
+
 ## Main Sensor Endpoint
 
 Use `POST /sensor` for new ESP32 firmware.
@@ -126,8 +134,7 @@ http://YOUR_PC_IP_ADDRESS:5000/training
 Use this page while collecting model data. The label buttons create time ranges in SQLite:
 
 - `empty`: out of room
-- `still`: present and sitting still
-- `moving`: moving in room
+- `occupied`: in room, sitting or moving
 
 Use the collection switch or `Pause labeling` when the current room state should not be used for training. Keep collection off while transitioning between states, such as walking into the room or standing up from sitting, then start the correct label once the state is stable.
 
@@ -173,7 +180,7 @@ GET /training-label
 POST /training-label
 ```
 
-`POST /training-label` accepts `empty`, `still`, `moving`, or an empty label to pause.
+`POST /training-label` accepts `empty`, `occupied`, or an empty label to pause.
 Responses include `collecting: true` while a training label interval is open.
 
 Compatibility event endpoint:
@@ -274,13 +281,13 @@ py train.py --input data/datasets/features.csv
 py train.py --output models/presence_model.pkl
 ```
 
-Training uses RSSI/window features and ignores `unlabeled` rows. It supports `empty`, `still`, and `moving` labels when they exist in the CSV.
+Training uses RSSI/window features and ignores `unlabeled` rows. Manual training labels are now usually `empty` and `occupied`. Older `still` and `moving` rows are still accepted so previous datasets remain usable.
 
 Label honesty:
 
-- `moving` may be PIR-derived and is useful as a rough early label.
+- PIR-derived `moving` is only a rough early label.
 - PIR inactivity is not proof of `empty`.
-- `still` needs deliberately collected or manually curated labels.
+- `occupied` needs deliberately collected manual labels.
 - Treat this as a first baseline classifier, not a reliable occupancy model yet.
 
 Run live inference after training:
@@ -325,4 +332,4 @@ PresenceDetection/
 3. Collect occupied and empty sessions.
 4. Build feature datasets with `build_dataset.py`.
 5. Label sessions in `data/labeled/`.
-6. Collect better `still` and `empty` labels for model quality.
+6. Collect better `occupied` and `empty` labels for model quality.

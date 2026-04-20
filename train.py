@@ -154,7 +154,7 @@ def main():
         "label_counts": dict(label_counts),
         "training_rows": len(rows),
         "label_note": (
-            "moving may be PIR-derived; empty/still require careful labels. "
+            "PIR-derived labels are rough; empty/occupied require careful labels. "
             "PIR inactivity is not proof that a room is empty."
         ),
     }
@@ -183,7 +183,7 @@ def main():
     else:
         print("Validation skipped: not enough rows per class for a stratified split.")
 
-    print("Label note: moving may be PIR-derived; empty/still labels are not guaranteed ground truth.")
+    print("Label note: PIR-derived labels are rough; empty/occupied labels need careful collection.")
     print(f"Model saved: {args.output}")
 
 

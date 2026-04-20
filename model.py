@@ -7,7 +7,7 @@ from storage import PROJECT_ROOT
 MODEL_DIR = PROJECT_ROOT / "models"
 DEFAULT_MODEL_PATH = MODEL_DIR / "presence_model.pkl"
 
-LABELS = ("empty", "still", "moving")
+LABELS = ("empty", "occupied", "still", "moving")
 FEATURE_COLUMNS = [
     "window_seconds",
     "sample_count",

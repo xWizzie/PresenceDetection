@@ -524,13 +524,39 @@ canvas {
 }
 
 @media (max-width: 860px) {
+  html,
+  body {
+    height: auto;
+    min-height: 100%;
+  }
+
+  body {
+    overflow: auto;
+  }
+
   .app {
+    display: block;
     width: min(100% - 12px, 1880px);
-    padding-top: 18px;
+    height: auto;
+    min-height: 100dvh;
+    padding: 12px 0 18px;
+    overflow: visible;
   }
 
   .dashboard-layout {
+    display: grid;
     grid-template-columns: 1fr;
+    gap: 12px;
+    overflow: visible;
+  }
+
+  .node-column,
+  .graph-column,
+  .event-column,
+  .status-band {
+    display: grid;
+    gap: 12px;
+    overflow: visible;
   }
 
   .topbar,
@@ -539,15 +565,119 @@ canvas {
     flex-direction: column;
   }
 
+  .topbar {
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .top-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+
+  .top-actions > * {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .pill,
+  .nav-link,
+  .theme-toggle {
+    min-height: 40px;
+    padding: 8px;
+    font-size: 0.9rem;
+  }
+
   .actions {
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    justify-content: stretch;
+    gap: 7px;
+  }
+
+  .actions button {
+    min-height: 38px;
+    padding: 7px 6px;
+    font-size: 0.88rem;
   }
 
   h1 {
-    font-size: 1.8rem;
+    font-size: 1.55rem;
+  }
+
+  h2 {
+    font-size: 1.05rem;
+  }
+
+  .eyebrow {
+    margin-bottom: 6px;
+    font-size: 0.78rem;
+  }
+
+  .lede,
+  .section-note {
+    font-size: 0.88rem;
+  }
+
+  .presence-panel,
+  .training-controls,
+  .sensor-card,
+  .graph-section,
+  .event-section {
+    padding: 10px;
+  }
+
+  .presence-panel .value,
+  .training-controls .value {
+    font-size: 1.45rem;
+  }
+
+  .timeout-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .sensor-grid {
+    gap: 10px;
+  }
+
+  .sensor-card {
+    gap: 0 8px;
+  }
+
+  .graph-column {
+    grid-template-rows: none;
+  }
+
+  .graph-section {
+    min-height: auto;
   }
 
   .chart-shell {
-    height: 320px;
+    height: 260px;
+  }
+
+  .event-list {
+    max-height: 45vh;
+    overflow: auto;
+  }
+}
+
+@media (max-width: 380px) {
+  .top-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .top-actions .pill {
+    grid-column: 1 / -1;
+  }
+
+  .actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chart-shell {
+    height: 240px;
   }
 }

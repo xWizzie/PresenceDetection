@@ -35,8 +35,7 @@ SENSOR_SAMPLE_RETENTION_SECONDS = 2 * 60 * 60
 SENSOR_SAMPLE_PRUNE_INTERVAL = 100
 TRAINING_LABELS = {
     "empty": "Out of room",
-    "still": "Sitting still",
-    "moving": "Moving in room",
+    "occupied": "In room",
 }
 sensor_state = {}
 last_pir_motion_time = {}
@@ -805,8 +804,8 @@ def state_payload():
         "nodes": states,
         "skipped": skipped,
         "label_note": (
-            "This is a baseline classifier. moving may be PIR-derived; "
-            "empty/still labels need careful collection."
+            "This is a baseline classifier. PIR-derived labels are rough; "
+            "empty/occupied labels need careful collection."
         ),
     }, 200
 

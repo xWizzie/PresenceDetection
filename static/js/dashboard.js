@@ -295,8 +295,9 @@ function drawChart() {
   const sensors = status ? Object.keys(status.sensors || {}) : [];
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(320, Math.floor(rect.width));
-  const height = Math.max(320, Math.floor(rect.height));
+  const isCompact = rect.width < 560;
+  const width = Math.max(isCompact ? 280 : 320, Math.floor(rect.width));
+  const height = Math.max(isCompact ? 220 : 320, Math.floor(rect.height));
 
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
@@ -306,9 +307,9 @@ function drawChart() {
   ctx.fillStyle = getThemeColor("--chart-bg", "#fbfcfc");
   ctx.fillRect(0, 0, width, height);
 
-  const left = width < 560 ? 82 : 122;
-  const right = 22;
-  const top = 30;
+  const left = width < 420 ? 62 : width < 560 ? 82 : 122;
+  const right = width < 420 ? 14 : 22;
+  const top = width < 420 ? 24 : 30;
   const bottom = 44;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
@@ -372,8 +373,9 @@ function drawRssiChart() {
   const sensors = status ? Object.keys(status.sensors || {}) : [];
   const rect = rssiCanvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(320, Math.floor(rect.width));
-  const height = Math.max(320, Math.floor(rect.height));
+  const isCompact = rect.width < 560;
+  const width = Math.max(isCompact ? 280 : 320, Math.floor(rect.width));
+  const height = Math.max(isCompact ? 220 : 320, Math.floor(rect.height));
 
   rssiCanvas.width = Math.floor(width * dpr);
   rssiCanvas.height = Math.floor(height * dpr);
@@ -383,8 +385,8 @@ function drawRssiChart() {
   rssiCtx.fillStyle = getThemeColor("--chart-bg", "#fbfcfc");
   rssiCtx.fillRect(0, 0, width, height);
 
-  const left = width < 560 ? 54 : 72;
-  const right = 22;
+  const left = width < 420 ? 48 : width < 560 ? 54 : 72;
+  const right = width < 420 ? 14 : 22;
   const top = 28;
   const bottom = 44;
   const chartWidth = width - left - right;
@@ -461,7 +463,7 @@ function drawRssiGrid(options) {
   } = options;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
-  const timeLines = 6;
+  const timeLines = width < 420 ? 3 : 6;
 
   rssiCtx.strokeStyle = getThemeColor("--chart-grid", "#e5ece9");
   rssiCtx.lineWidth = 1;
@@ -815,7 +817,7 @@ function getPresenceTransitionTimes(sensorEvents, start, now, timeoutMs) {
 
 function drawGrid(width, height, left, right, top, bottom, start, now) {
   const chartWidth = width - left - right;
-  const gridCount = 6;
+  const gridCount = width < 420 ? 3 : 6;
 
   ctx.strokeStyle = getThemeColor("--chart-grid", "#e5ece9");
   ctx.lineWidth = 1;

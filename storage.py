@@ -46,6 +46,7 @@ def init_storage(db_path=DEFAULT_DB_PATH):
         connection.execute(SENSOR_SAMPLES_SCHEMA)
         connection.execute(TRAINING_LABELS_SCHEMA)
         migrate_sensor_samples_schema(connection)
+        normalize_training_labels(connection)
         connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_sensor_samples_node_received
             ON sensor_samples (node_id, received_at)
@@ -103,6 +104,17 @@ def migrate_sensor_samples_schema(connection):
         FROM sensor_samples_old
     """)
     connection.execute("DROP TABLE sensor_samples_old")
+
+
+def normalize_training_labels(connection):
+    connection.execute(
+        """
+        UPDATE training_labels
+        SET label = 'occupied',
+            label_name = 'In room'
+        WHERE label IN ('still', 'moving')
+        """
+    )
 
 
 def insert_sensor_sample(sample, db_path=DEFAULT_DB_PATH):
