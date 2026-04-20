@@ -2,6 +2,7 @@ import argparse
 import csv
 from collections import Counter
 from datetime import datetime, timezone
+from math import ceil
 from pathlib import Path
 
 from sklearn.ensemble import RandomForestClassifier
@@ -76,11 +77,18 @@ def read_training_rows(csv_path):
     return rows, skipped
 
 
-def can_validate(label_counts):
+def can_validate(label_counts, test_size):
+    total_rows = sum(label_counts.values())
+    class_count = len(label_counts)
+    test_rows = ceil(total_rows * test_size)
+    train_rows = total_rows - test_rows
+
     return (
-        sum(label_counts.values()) >= 4
-        and len(label_counts) >= 2
+        total_rows >= 4
+        and class_count >= 2
         and min(label_counts.values()) >= 2
+        and test_rows >= class_count
+        and train_rows >= class_count
     )
 
 
@@ -95,7 +103,7 @@ def train_model(rows, test_size, random_state):
     )
 
     validation = None
-    if can_validate(label_counts):
+    if can_validate(label_counts, test_size):
         train_x, test_x, train_y, test_y = train_test_split(
             features,
             labels,
@@ -154,8 +162,8 @@ def main():
         "label_counts": dict(label_counts),
         "training_rows": len(rows),
         "label_note": (
-            "PIR-derived labels are rough; empty/occupied require careful labels. "
-            "PIR inactivity is not proof that a room is empty."
+            "Labels come from manual training intervals only. "
+            "PIR is used only as an input feature."
         ),
     }
     save_model_bundle(
@@ -183,7 +191,7 @@ def main():
     else:
         print("Validation skipped: not enough rows per class for a stratified split.")
 
-    print("Label note: PIR-derived labels are rough; empty/occupied labels need careful collection.")
+    print("Label note: labels come from manual training intervals; PIR is an input feature only.")
     print(f"Model saved: {args.output}")
 
 

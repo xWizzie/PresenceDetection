@@ -63,8 +63,6 @@ def build_feature_rows(
     step_seconds=1.0,
     min_samples=3,
     time_field="received_at",
-    inactive_label="empty",
-    missing_pir_label="unlabeled",
 ):
     rows = []
     grouped = group_samples_by_node(samples, time_field=time_field)
@@ -77,8 +75,6 @@ def build_feature_rows(
             step_seconds=step_seconds,
             min_samples=min_samples,
             time_field=time_field,
-            inactive_label=inactive_label,
-            missing_pir_label=missing_pir_label,
         ))
 
     return rows
@@ -91,8 +87,6 @@ def build_node_feature_rows(
     step_seconds,
     min_samples,
     time_field,
-    inactive_label,
-    missing_pir_label,
 ):
     if not samples:
         return []
@@ -115,8 +109,6 @@ def build_node_feature_rows(
             samples=window_samples,
             min_samples=min_samples,
             time_field=time_field,
-            inactive_label=inactive_label,
-            missing_pir_label=missing_pir_label,
         )
 
         if row:
@@ -134,8 +126,6 @@ def extract_window_features(
     samples,
     min_samples,
     time_field,
-    inactive_label,
-    missing_pir_label,
 ):
     if len(samples) < min_samples:
         return None
@@ -156,13 +146,6 @@ def extract_window_features(
     pir_sum = sum(1 for value in pir_values if value)
     pir_any = 1 if pir_sum else 0
 
-    if pir_any:
-        label = "moving"
-    elif pir_values:
-        label = inactive_label
-    else:
-        label = missing_pir_label
-
     return {
         "node_id": node_id,
         "window_start": format_window_time(window_start, time_field),
@@ -178,5 +161,5 @@ def extract_window_features(
         "pir_count": len(pir_values),
         "pir_sum": pir_sum,
         "pir_any": pir_any,
-        "label": label,
+        "label": "unlabeled",
     }

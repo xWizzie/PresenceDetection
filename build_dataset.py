@@ -75,25 +75,9 @@ def parse_args():
     )
     parser.add_argument(
         "--time-field",
-        choices=("received_at", "timestamp_ms"),
+        choices=("received_at",),
         default="received_at",
-        help="Time source used for windowing.",
-    )
-    parser.add_argument(
-        "--inactive-label",
-        default="empty",
-        help="Placeholder label when PIR exists but is inactive in a window.",
-    )
-    parser.add_argument(
-        "--missing-pir-label",
-        default="unlabeled",
-        help="Label when a window has RSSI but no PIR values.",
-    )
-    parser.add_argument(
-        "--label-source",
-        choices=("pir", "training"),
-        default="pir",
-        help="Use PIR-derived labels or manual labels from /training.",
+        help="Time source used for windowing. Manual labels require received_at.",
     )
     return parser.parse_args()
 
@@ -105,32 +89,44 @@ def validate_args(args):
         raise SystemExit("--step-seconds must be greater than 0")
     if args.min_samples <= 0:
         raise SystemExit("--min-samples must be greater than 0")
-    if args.label_source == "training" and args.time_field != "received_at":
-        raise SystemExit("--label-source training requires --time-field received_at")
 
 
-def training_label_intervals():
+def normalize_training_label(label):
+    if label in ("empty", "occupied"):
+        return label
+    if label in ("still", "moving"):
+        return "occupied"
+    return None
+
+
+def training_label_intervals(db_path):
     now_seconds = datetime.now(timezone.utc).timestamp()
     intervals = []
 
-    for label in fetch_training_labels():
+    for label in fetch_training_labels(db_path=db_path):
         start = parse_received_at(label["started_at"])
         end = parse_received_at(label["ended_at"]) if label["ended_at"] else now_seconds
+        normalized_label = normalize_training_label(label["label"])
 
-        if start is None or end is None or end <= start:
+        if (
+            start is None
+            or end is None
+            or end <= start
+            or normalized_label is None
+        ):
             continue
 
         intervals.append({
             "start": start,
             "end": end,
-            "label": label["label"],
+            "label": normalized_label,
         })
 
     return intervals
 
 
-def apply_training_labels(rows):
-    intervals = training_label_intervals()
+def apply_training_labels(rows, db_path):
+    intervals = training_label_intervals(db_path)
 
     for row in rows:
         window_start = parse_received_at(row["window_start"])
@@ -171,17 +167,15 @@ def main():
         step_seconds=args.step_seconds,
         min_samples=args.min_samples,
         time_field=args.time_field,
-        inactive_label=args.inactive_label,
-        missing_pir_label=args.missing_pir_label,
     )
-    if args.label_source == "training":
-        rows = apply_training_labels(rows)
+    rows = apply_training_labels(rows, args.db)
 
     write_csv(rows, args.output)
 
     print(f"Read samples: {len(samples)}")
     print(f"Wrote rows: {len(rows)}")
-    print(f"Label source: {args.label_source}")
+    print("Label source: manual training labels")
+    print("Unlabeled rows: " + str(sum(1 for row in rows if row["label"] == "unlabeled")))
     print(f"Output: {args.output}")
 
 

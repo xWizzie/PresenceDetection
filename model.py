@@ -7,7 +7,7 @@ from storage import PROJECT_ROOT
 MODEL_DIR = PROJECT_ROOT / "models"
 DEFAULT_MODEL_PATH = MODEL_DIR / "presence_model.pkl"
 
-LABELS = ("empty", "occupied", "still", "moving")
+LABELS = ("empty", "occupied")
 FEATURE_COLUMNS = [
     "window_seconds",
     "sample_count",
@@ -17,6 +17,9 @@ FEATURE_COLUMNS = [
     "rssi_min",
     "rssi_max",
     "rssi_delta",
+    "pir_count",
+    "pir_sum",
+    "pir_any",
 ]
 
 

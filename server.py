@@ -710,8 +710,6 @@ def latest_feature_rows_by_node(samples, window_seconds, min_samples):
             samples=window_samples,
             min_samples=min_samples,
             time_field="received_at",
-            inactive_label="empty",
-            missing_pir_label="unlabeled",
         )
 
         if row:
@@ -804,8 +802,8 @@ def state_payload():
         "nodes": states,
         "skipped": skipped,
         "label_note": (
-            "This is a baseline classifier. PIR-derived labels are rough; "
-            "empty/occupied labels need careful collection."
+            "This is a baseline classifier trained from manual empty/occupied "
+            "label intervals. PIR is an input feature only."
         ),
     }, 200
 

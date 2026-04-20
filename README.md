@@ -2,7 +2,7 @@
 
 Flask-based phase-1 data collection server for ESP32 presence sensing experiments.
 
-The goal is not final presence detection yet. Phase 1 collects clean time-series samples so a model can be built later for device-free presence detection from Wi-Fi disturbances. PIR is kept as a debugging and rough-labeling signal.
+The goal is not final presence detection yet. Phase 1 collects clean time-series samples so a model can be built later for device-free presence detection from Wi-Fi disturbances. PIR is kept as a debugging signal and input feature, not as training ground truth.
 
 ## What Phase 1 Does
 
@@ -229,30 +229,28 @@ Default output:
 data/datasets/features.csv
 ```
 
-The builder creates sliding windows per `node_id` using `received_at` by default.
+The builder creates sliding windows per `node_id` using `received_at` and labels each window from the manual training intervals saved by `/training`.
 
 Default settings:
 
 - window size: `5` seconds
 - step: `1` second
 - minimum samples per window: `3`
-- label: `moving` if PIR is active in the window
-- label: `empty` if PIR values exist but are inactive in the window
-- label: `unlabeled` if the window has RSSI but no PIR values
+- label: `occupied` if the window midpoint falls inside an `In room` interval
+- label: `empty` if the window midpoint falls inside an `Out of room` interval
+- label: `unlabeled` if the window midpoint is outside manual label intervals
 
-The `empty` label is only a placeholder for early experiments. PIR inactivity is not proof that the room is empty.
+PIR values are kept in the dataset as `pir_count`, `pir_sum`, and `pir_any` feature columns. PIR is never used to create the label.
 
 Useful options:
 
 ```powershell
 py build_dataset.py --node-id node_1
 py build_dataset.py --window-seconds 3 --step-seconds 1
-py build_dataset.py --time-field timestamp_ms
 py build_dataset.py --output data/datasets/node_1_features.csv
-py build_dataset.py --label-source training
 ```
 
-Use `--label-source training` after collecting labels on `/training`. This replaces PIR-derived labels with the manual label interval covering each feature window midpoint. Windows outside labeled intervals become `unlabeled`.
+Collect labels on `/training` before building the dataset. Windows outside labeled intervals stay `unlabeled` and are ignored by training.
 
 CSV columns include:
 
@@ -281,13 +279,14 @@ py train.py --input data/datasets/features.csv
 py train.py --output models/presence_model.pkl
 ```
 
-Training uses RSSI/window features and ignores `unlabeled` rows. Manual training labels are now usually `empty` and `occupied`. Older `still` and `moving` rows are still accepted so previous datasets remain usable.
+Training uses window, RSSI, and PIR feature columns and ignores `unlabeled` rows. The trained classes are binary occupancy labels: `empty` and `occupied`.
 
 Label honesty:
 
-- PIR-derived `moving` is only a rough early label.
-- PIR inactivity is not proof of `empty`.
-- `occupied` needs deliberately collected manual labels.
+- Manual labels are the only ground truth.
+- `In room` maps to `occupied`.
+- `Out of room` maps to `empty`.
+- PIR is an input feature only; PIR inactivity is not proof of `empty`.
 - Treat this as a first baseline classifier, not a reliable occupancy model yet.
 
 Run live inference after training:
@@ -322,7 +321,6 @@ PresenceDetection/
   data/
     raw/
     datasets/
-    labeled/
 ```
 
 ## Next Milestones
@@ -331,5 +329,5 @@ PresenceDetection/
 2. Add two more ESP32 boards.
 3. Collect occupied and empty sessions.
 4. Build feature datasets with `build_dataset.py`.
-5. Label sessions in `data/labeled/`.
+5. Label sessions with the `/training` page.
 6. Collect better `occupied` and `empty` labels for model quality.
