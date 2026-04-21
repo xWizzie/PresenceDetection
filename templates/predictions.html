@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Predictions - Presence Monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body class="prediction-page">
+  <main class="app prediction-app">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Live model inference</p>
+        <h1>Prediction Monitor</h1>
+        <p class="lede">See the model's current room-state prediction in one place. This page reads the live inference output from <code>/state</code> and shows the combined decision instead of a card for each node.</p>
+      </div>
+      <div class="top-actions">
+        <a class="nav-link" href="/">Dashboard</a>
+        <a class="nav-link" href="/training">Training</a>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-pressed="false">Dark</button>
+        <div class="pill clear" id="connectionState">Connecting</div>
+      </div>
+    </header>
+
+    <div class="prediction-layout">
+      <section class="prediction-overview" aria-label="Prediction summary">
+        <div class="presence-panel prediction-hero">
+          <p class="label">Current room prediction</p>
+          <p class="value" id="predictionHeadline">Waiting</p>
+          <p class="meta" id="predictionMeta">The model is loading the latest feature windows.</p>
+        </div>
+
+        <div class="prediction-summary-grid">
+          <article class="summary-card">
+            <p class="summary-label">Nodes used</p>
+            <p class="summary-value" id="predictedNodeCount">0</p>
+          </article>
+          <article class="summary-card">
+            <p class="summary-label">Occupied votes</p>
+            <p class="summary-value" id="occupiedCount">0</p>
+          </article>
+          <article class="summary-card">
+            <p class="summary-label">Empty votes</p>
+            <p class="summary-value" id="emptyCount">0</p>
+          </article>
+          <article class="summary-card">
+            <p class="summary-label">Last update</p>
+            <p class="summary-value summary-value-small" id="lastUpdate">Waiting</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="prediction-section prediction-graph-section full-span" aria-label="Prediction graph">
+        <div class="section-head">
+          <div>
+            <h2>Prediction History</h2>
+            <p class="section-note">This graph replays recent stored samples through the trained model and shows how the room-level prediction changed over time.</p>
+          </div>
+          <div class="actions" id="predictionRangeButtons">
+            <button type="button" data-minutes="3" class="active">3 min</button>
+            <button type="button" data-minutes="5">5 min</button>
+            <button type="button" data-minutes="15">15 min</button>
+            <button type="button" data-minutes="30">30 min</button>
+            <button type="button" data-minutes="60">1 hour</button>
+          </div>
+        </div>
+        <div class="chart-shell prediction-chart-shell">
+          <canvas id="predictionChart" height="320"></canvas>
+        </div>
+      </section>
+
+      <section class="prediction-section" aria-label="Model decision">
+        <div class="section-head">
+          <div>
+            <h2>Model Decision</h2>
+            <p class="section-note">This is the combined room-level result shown by the prediction page.</p>
+          </div>
+          <span class="pill" id="modelWindowInfo">Window 5s</span>
+        </div>
+        <div class="prediction-details">
+          <div class="detail-row">
+            <span>Room state</span>
+            <strong id="roomState">Waiting</strong>
+          </div>
+          <div class="detail-row">
+            <span>Decision confidence</span>
+            <strong id="roomConfidence">Waiting</strong>
+          </div>
+          <div class="detail-row">
+            <span>Latest inference window</span>
+            <strong id="roomWindowEnd">Waiting</strong>
+          </div>
+          <div class="detail-row">
+            <span>Aggregation rule</span>
+            <strong id="roomAggregation">Waiting</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="prediction-section" aria-label="Model details">
+        <div class="section-head">
+          <div>
+            <h2>Model Details</h2>
+            <p class="section-note">Useful when you want to sanity-check which saved model and runtime settings the page is using.</p>
+          </div>
+        </div>
+        <div class="prediction-details">
+          <div class="detail-row">
+            <span>Model file</span>
+            <strong id="modelPath">Waiting</strong>
+          </div>
+          <div class="detail-row">
+            <span>Minimum samples</span>
+            <strong id="minSamples">-</strong>
+          </div>
+          <div class="detail-row">
+            <span>Sample fetch limit</span>
+            <strong id="sampleLimit">-</strong>
+          </div>
+          <div class="detail-row">
+            <span>Label note</span>
+            <strong id="labelNote">Waiting</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="prediction-section" aria-label="Skipped nodes and issues">
+        <div class="section-head">
+          <div>
+            <h2>Skipped Nodes</h2>
+            <p class="section-note">Nodes can be skipped if there are not enough recent samples to build a valid feature window.</p>
+          </div>
+        </div>
+        <div class="prediction-skipped" id="skippedNodes"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="{{ url_for('static', filename='js/predictions.js') }}"></script>
+</body>
+</html>

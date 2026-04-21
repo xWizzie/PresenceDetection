@@ -4,8 +4,19 @@ from threading import Lock
 
 from flask import Flask, jsonify, render_template, request
 
-from features import extract_window_features, group_samples_by_node
-from model import DEFAULT_MODEL_PATH, ModelNotFoundError, predict_state
+from features import (
+    build_feature_rows,
+    extract_window_features,
+    group_samples_by_node,
+    parse_received_at,
+)
+from model import (
+    DEFAULT_MODEL_PATH,
+    ModelNotFoundError,
+    feature_vector,
+    load_model_bundle,
+    predict_state,
+)
 from storage import (
     DEFAULT_DB_PATH,
     count_samples,
@@ -34,6 +45,7 @@ STATUS_HISTORY_LIMIT = 60
 STATE_SAMPLE_LIMIT = 3000
 STATE_WINDOW_SECONDS = 5.0
 STATE_MIN_SAMPLES = 3
+PREDICTION_HISTORY_STEP_SECONDS = 1.0
 SENSOR_SAMPLE_RETENTION_SECONDS = 2 * 60 * 60
 SENSOR_SAMPLE_PRUNE_INTERVAL = 100
 TRAINING_LABELS = {
@@ -406,6 +418,11 @@ def training():
     return render_template("training.html")
 
 
+@app.route("/predictions", methods=["GET"])
+def predictions():
+    return render_template("predictions.html")
+
+
 @app.route("/sensor", methods=["POST"])
 def sensor_ingest():
     payload, status_code = ingest_sensor_sample(
@@ -715,6 +732,133 @@ def latest_feature_rows_by_node(samples, window_seconds, min_samples):
     return feature_rows, skipped
 
 
+def room_prediction_from_node_states(states):
+    predicted_nodes = len(states)
+    occupied_nodes = sum(
+        1
+        for node in states.values()
+        if node.get("state") == "occupied"
+    )
+    empty_nodes = sum(
+        1
+        for node in states.values()
+        if node.get("state") == "empty"
+    )
+    latest_window_end = None
+
+    for node in states.values():
+        window_end = node.get("window_end")
+        if window_end and (latest_window_end is None or window_end > latest_window_end):
+            latest_window_end = window_end
+
+    if not predicted_nodes:
+        return {
+            "state": None,
+            "confidence": None,
+            "predicted_nodes": 0,
+            "occupied_nodes": 0,
+            "empty_nodes": 0,
+            "window_end": None,
+            "aggregation": (
+                "occupied if any active node predicts occupied; "
+                "empty only when all predicted nodes are empty"
+            ),
+        }
+
+    if occupied_nodes:
+        state = "occupied"
+        confidence_values = [
+            node.get("confidence")
+            for node in states.values()
+            if node.get("state") == "occupied" and node.get("confidence") is not None
+        ]
+        confidence = max(confidence_values) if confidence_values else None
+    else:
+        state = "empty"
+        confidence_values = [
+            node.get("confidence")
+            for node in states.values()
+            if node.get("state") == "empty" and node.get("confidence") is not None
+        ]
+        confidence = min(confidence_values) if confidence_values else None
+
+    return {
+        "state": state,
+        "confidence": round(confidence, 4) if confidence is not None else None,
+        "predicted_nodes": predicted_nodes,
+        "occupied_nodes": occupied_nodes,
+        "empty_nodes": empty_nodes,
+        "window_end": latest_window_end,
+        "aggregation": (
+            "occupied if any active node predicts occupied; "
+            "empty only when all predicted nodes are empty"
+        ),
+    }
+
+
+def room_prediction_history(samples, window_seconds, step_seconds, min_samples):
+    bundle = load_model_bundle(DEFAULT_MODEL_PATH)
+    estimator = bundle["model"]
+    feature_columns = bundle.get("feature_columns")
+    feature_rows = build_feature_rows(
+        samples=samples,
+        window_seconds=window_seconds,
+        step_seconds=step_seconds,
+        min_samples=min_samples,
+        time_field="received_at",
+    )
+    windows = {}
+    if not feature_rows:
+        return []
+
+    vectors = [feature_vector(row, feature_columns) for row in feature_rows]
+    predicted_states = estimator.predict(vectors)
+    confidences = [None] * len(feature_rows)
+
+    if hasattr(estimator, "predict_proba"):
+        probabilities = estimator.predict_proba(vectors)
+        classes = list(estimator.classes_)
+        for index, predicted_state in enumerate(predicted_states):
+            confidences[index] = float(
+                probabilities[index][classes.index(predicted_state)]
+            )
+
+    for row, predicted_state, confidence in zip(
+        feature_rows,
+        predicted_states,
+        confidences,
+    ):
+        window_end_seconds = parse_received_at(row.get("window_end"))
+        if window_end_seconds is None:
+            continue
+
+        bucket = int(window_end_seconds)
+        window_entry = windows.setdefault(bucket, {})
+        node_id = row.get("node_id")
+        if not node_id:
+            continue
+
+        window_entry[node_id] = {
+            "state": predicted_state,
+            "confidence": round(confidence, 4) if confidence is not None else None,
+            "window_end": row["window_end"],
+        }
+
+    history = []
+    for bucket in sorted(windows):
+        room_state = room_prediction_from_node_states(windows[bucket])
+        history.append({
+            "timestamp": room_state["window_end"],
+            "state": room_state["state"],
+            "confidence": room_state["confidence"],
+            "predicted_nodes": room_state["predicted_nodes"],
+            "occupied_nodes": room_state["occupied_nodes"],
+            "empty_nodes": room_state["empty_nodes"],
+        })
+
+    return history
+
+
 def state_payload():
     window_seconds, window_error = parse_float_query(
         "window_seconds",
@@ -786,6 +930,8 @@ def state_payload():
             "model_path": str(DEFAULT_MODEL_PATH),
         }, 500
 
+    room_state = room_prediction_from_node_states(states)
+
     return {
         "ok": True,
         "model_loaded": True,
@@ -793,6 +939,7 @@ def state_payload():
         "window_seconds": window_seconds,
         "min_samples": min_samples,
         "sample_limit": limit,
+        "room_state": room_state,
         "states": states,
         "nodes": states,
         "skipped": skipped,
@@ -803,9 +950,97 @@ def state_payload():
     }, 200
 
 
+def prediction_history_payload():
+    minutes, minutes_error = parse_int_query(
+        "minutes",
+        5,
+        min_value=1,
+        max_value=MAX_DASHBOARD_WINDOW_MINUTES,
+    )
+    window_seconds, window_error = parse_float_query(
+        "window_seconds",
+        STATE_WINDOW_SECONDS,
+        min_value=0.1,
+    )
+    min_samples, min_samples_error = parse_int_query(
+        "min_samples",
+        STATE_MIN_SAMPLES,
+        min_value=1,
+    )
+    errors = [
+        error
+        for error in (minutes_error, window_error, min_samples_error)
+        if error
+    ]
+    if errors:
+        return {"ok": False, "error": "; ".join(errors)}, 400
+
+    if not DEFAULT_MODEL_PATH.exists():
+        return {
+            "ok": False,
+            "model_loaded": False,
+            "error": "No trained model found. Run train.py first.",
+            "model_path": str(DEFAULT_MODEL_PATH),
+        }, 503
+
+    sample_limit = min(
+        EVENT_HISTORY_LIMIT,
+        int((minutes * 60 + window_seconds + 5) * DASHBOARD_SAMPLE_RATE_PER_SECOND),
+    )
+    samples = fetch_recent_samples(limit=max(sample_limit, STATE_SAMPLE_LIMIT))
+
+    try:
+        history = room_prediction_history(
+            samples=samples,
+            window_seconds=window_seconds,
+            step_seconds=PREDICTION_HISTORY_STEP_SECONDS,
+            min_samples=min_samples,
+        )
+    except ModelNotFoundError:
+        return {
+            "ok": False,
+            "model_loaded": False,
+            "error": "No trained model found. Run train.py first.",
+            "model_path": str(DEFAULT_MODEL_PATH),
+        }, 503
+    except Exception as error:
+        return {
+            "ok": False,
+            "model_loaded": False,
+            "error": f"Could not build prediction history: {error}",
+            "model_path": str(DEFAULT_MODEL_PATH),
+        }, 500
+
+    if history:
+        threshold = utc_now() - timedelta(minutes=minutes)
+        threshold_iso = format_timestamp(threshold)
+        history = [
+            entry
+            for entry in history
+            if entry["timestamp"] and entry["timestamp"] >= threshold_iso
+        ]
+
+    return {
+        "ok": True,
+        "model_loaded": True,
+        "model_path": str(DEFAULT_MODEL_PATH),
+        "minutes": minutes,
+        "window_seconds": window_seconds,
+        "min_samples": min_samples,
+        "step_seconds": PREDICTION_HISTORY_STEP_SECONDS,
+        "history": history,
+    }, 200
+
+
 @app.route("/state", methods=["GET"])
 def state():
     payload, status_code = state_payload()
+    return jsonify(payload), status_code
+
+
+@app.route("/prediction-history", methods=["GET"])
+def prediction_history():
+    payload, status_code = prediction_history_payload()
     return jsonify(payload), status_code
 
 
@@ -822,6 +1057,7 @@ def api_info():
         "endpoints": {
             "dashboard": "/",
             "training": "/training",
+            "predictions": "/predictions",
             "post_sensor": "/sensor",
             "legacy_post_pir": "/pir",
             "samples": "/samples",
@@ -829,6 +1065,7 @@ def api_info():
             "events": "/events",
             "status": "/status",
             "state": "/state",
+            "prediction_history": "/prediction-history",
             "settings": "/settings",
             "training_label": "/training-label",
             "health": "/health",
