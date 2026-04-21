@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 
@@ -19,6 +20,8 @@ from storage import (
 )
 
 app = Flask(__name__)
+app.logger.disabled = True
+logging.getLogger("werkzeug").disabled = True
 
 DEFAULT_PRESENCE_TIMEOUT_SECONDS = 180
 MIN_PRESENCE_TIMEOUT_SECONDS = 5
@@ -332,15 +335,7 @@ def ingest_sensor_sample(data, source_endpoint):
         sample_id = insert_sensor_sample(event)
         event["sample_id"] = sample_id
         append_sample_to_memory(event)
-        pruned_samples = prune_stored_samples_if_needed()
-
-    print(
-        f"[{received_at}] sensor={sensor} pir={pir} "
-        f"wifi_rssi={sample['wifi_rssi']} uptime_ms={sample['uptime_ms']} "
-        f"present={present} home_present={home_present}"
-    )
-    if pruned_samples:
-        print(f"Pruned {pruned_samples} old stored samples")
+        prune_stored_samples_if_needed()
 
     return {
         "ok": True,
@@ -851,5 +846,4 @@ def api_info():
 
 
 if __name__ == "__main__":
-    print("Starting presence sensing server on http://0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000, debug=True)

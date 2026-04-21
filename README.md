@@ -258,6 +258,24 @@ CSV columns include:
 node_id, window_start, window_end, sample_count, rssi_mean, rssi_std, rssi_min, rssi_max, rssi_delta, pir_sum, pir_any, label
 ```
 
+## Check Dataset Readiness
+
+Before training, summarize the collected data and class balance:
+
+```powershell
+py summarize_dataset.py
+```
+
+Useful options:
+
+```powershell
+py summarize_dataset.py --node-id node_1
+py summarize_dataset.py --window-seconds 3 --step-seconds 1
+py summarize_dataset.py --dataset-csv data/datasets/features.csv
+```
+
+This reports raw sample counts, labeled interval coverage, training-ready window counts, class balance, per-node counts, and a simple readiness verdict for the first `occupied` vs `empty` baseline.
+
 ## Train The Baseline Model
 
 Train a simple RandomForest baseline from the feature CSV:
@@ -309,6 +327,7 @@ PresenceDetection/
   storage.py
   features.py
   build_dataset.py
+  summarize_dataset.py
   train.py
   model.py
   requirements.txt

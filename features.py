@@ -94,14 +94,26 @@ def build_node_feature_rows(
     rows = []
     window_start = samples[0]["_time_seconds"]
     last_time = samples[-1]["_time_seconds"]
+    start_index = 0
+    end_index = 0
+    sample_total = len(samples)
 
     while window_start + window_seconds <= last_time:
         window_end = window_start + window_seconds
-        window_samples = [
-            sample
-            for sample in samples
-            if window_start <= sample["_time_seconds"] < window_end
-        ]
+
+        while (
+            start_index < sample_total
+            and samples[start_index]["_time_seconds"] < window_start
+        ):
+            start_index += 1
+
+        while (
+            end_index < sample_total
+            and samples[end_index]["_time_seconds"] < window_end
+        ):
+            end_index += 1
+
+        window_samples = samples[start_index:end_index]
         row = extract_window_features(
             node_id=node_id,
             window_start=window_start,

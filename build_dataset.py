@@ -172,11 +172,11 @@ def main():
 
     write_csv(rows, args.output)
 
-    print(f"Read samples: {len(samples)}")
-    print(f"Wrote rows: {len(rows)}")
-    print("Label source: manual training labels")
-    print("Unlabeled rows: " + str(sum(1 for row in rows if row["label"] == "unlabeled")))
-    print(f"Output: {args.output}")
+    # print(f"Read samples: {len(samples)}")
+    # print(f"Wrote rows: {len(rows)}")
+    # print("Label source: manual training labels")
+    # print("Unlabeled rows: " + str(sum(1 for row in rows if row["label"] == "unlabeled")))
+    # print(f"Output: {args.output}")
 
 
 if __name__ == "__main__":
